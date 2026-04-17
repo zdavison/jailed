@@ -15,6 +15,7 @@ test_case "fires on 'python3 -c'"
 out=$(run_hook "python3 -c 'print(1)'")
 assert_contains "$out" '"permissionDecision": "ask"' "must ask"
 assert_contains "$out" "safe-python" "reason must mention safe-python"
+assert_contains "$out" '"additionalContext"' "must include additionalContext so Claude sees the nudge"
 
 test_case "fires on 'python -c' at start"
 out=$(run_hook "python -c 'print(1)'")
