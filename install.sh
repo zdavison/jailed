@@ -78,6 +78,36 @@ check_deps() {
   return 0
 }
 
+# Run a command with sudo iff the target path is not user-writable.
+_maybe_sudo() {
+  local target="$1"; shift
+  if [[ -w "$target" ]] || { [[ ! -e "$target" ]] && [[ -w "$(dirname "$target")" ]]; }; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+install_bins() {
+  local prefix="${PREFIX:-/usr/local}"
+  local bindir="$prefix/bin"
+  local target="$bindir/safe-python"
+  local link="$bindir/safe-python3"
+
+  _maybe_sudo "$bindir" mkdir -p "$bindir"
+
+  # Write via tee so sudo flows naturally.
+  printf '%s\n' "$SAFE_PYTHON_SCRIPT" | _maybe_sudo "$target" tee "$target" >/dev/null
+  _maybe_sudo "$target" chmod 755 "$target"
+
+  # safe-python3 -> safe-python (replace existing symlink or file).
+  _maybe_sudo "$link" rm -f "$link"
+  _maybe_sudo "$link" ln -s safe-python "$link"
+
+  echo "Installed: $target"
+  echo "Installed: $link -> safe-python"
+}
+
 usage() {
   cat <<EOF
 Usage: bash install.sh [--uninstall] [--help]
