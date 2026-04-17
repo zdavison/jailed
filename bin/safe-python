@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# safe-python: /usr/bin/python3 under bubblewrap.
+# - read-only view of /, no writes outside ephemeral tmpfs
+# - no network (unshare-all)
+# - dies with parent shell
+
+exec bwrap \
+  --ro-bind / / \
+  --dev /dev \
+  --proc /proc \
+  --tmpfs /tmp \
+  --tmpfs /run \
+  --tmpfs "$HOME" \
+  --unshare-all \
+  --die-with-parent \
+  --new-session \
+  /usr/bin/python3 "$@"
