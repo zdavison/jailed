@@ -19,10 +19,35 @@ set -euo pipefail
 
 read -r -d '' SAFE_PYTHON_SCRIPT <<'PUPBOX_EOF' || true
 #!/usr/bin/env bash
-# safe-python: /usr/bin/python3 under bubblewrap.
-# - read-only view of /, no writes outside ephemeral tmpfs
-# - no network (unshare-all)
-# - dies with parent shell
+# safe-python: /usr/bin/python3 sandboxed.
+# - read-only view of the filesystem, no writes outside allowed /dev sinks
+# - no network
+# - Linux: bubblewrap with ephemeral tmpfs for $HOME, /tmp, /run
+# - macOS: sandbox-exec with an equivalent Seatbelt profile.
+#          Writes fail outright instead of landing in a tmpfs — there is no
+#          cheap tmpfs on Darwin, and the no-side-effects contract is the same.
+
+set -u
+
+if [[ "$(uname)" == "Darwin" ]]; then
+  exec sandbox-exec -p '(version 1)
+(deny default)
+(allow process*)
+(allow signal (target self))
+(allow mach-lookup)
+(allow ipc-posix*)
+(allow sysctl-read)
+(allow file-read*)
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/stdout")
+  (literal "/dev/stderr")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (regex "^/dev/fd/")
+  (regex "^/dev/ttys"))
+(deny network*)' /usr/bin/python3 "$@"
+fi
 
 exec bwrap \
   --ro-bind / / \
@@ -67,12 +92,19 @@ PYTHON_NUDGE_SCRIPT+=$'\n'
 
 check_deps() {
   local missing=()
-  for tool in bwrap jq python3; do
+  local sandbox_tool="bwrap"
+  [[ "$(uname 2>/dev/null)" == "Darwin" ]] && sandbox_tool="sandbox-exec"
+
+  for tool in "$sandbox_tool" jq python3; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   if (( ${#missing[@]} > 0 )); then
     echo "Missing required tools: ${missing[*]}" >&2
-    echo "On Debian/Ubuntu: sudo apt install bubblewrap jq python3" >&2
+    if [[ "$(uname)" == "Darwin" ]]; then
+      echo "sandbox-exec ships with macOS; jq/python3 via: brew install jq python" >&2
+    else
+      echo "On Debian/Ubuntu: sudo apt install bubblewrap jq python3" >&2
+    fi
     return 1
   fi
   return 0
