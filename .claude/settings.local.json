@@ -27,7 +27,8 @@
       "Bash(echo \"exit code: $?\")",
       "Bash(echo \"help exit: $?\")",
       "Bash(echo \"help -h exit: $?\")",
-      "Bash(echo \"invalid flag exits: $?\")"
+      "Bash(echo \"invalid flag exits: $?\")",
+      "Bash(PUPBOX_LIB_ONLY=1 PATH=/nonexistent bash -c 'source install.sh; check_deps')"
     ]
   }
 }
