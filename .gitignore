@@ -1,0 +1,9 @@
+# scratch + test artifacts
+/tmp-test/
+/.test-home/
+*.log
+
+# editor
+.idea/
+.vscode/
+*.swp
