@@ -108,6 +108,15 @@ install_bins() {
   echo "Installed: $link -> safe-python"
 }
 
+install_hook() {
+  local hooks_dir="$HOME/.claude/hooks"
+  local target="$hooks_dir/python-nudge.sh"
+  mkdir -p "$hooks_dir"
+  printf '%s\n' "$PYTHON_NUDGE_SCRIPT" > "$target"
+  chmod 755 "$target"
+  echo "Installed: $target"
+}
+
 usage() {
   cat <<EOF
 Usage: bash install.sh [--uninstall] [--help]

@@ -52,4 +52,17 @@ assert_exit 0 $? "second install_bins must succeed"
 
 rm -rf "$tmp"
 
+test_case "install_hook writes hook into \$HOME/.claude/hooks/"
+tmp_home=$(make_tmp)
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' install_hook"
+hook_path="$tmp_home/.claude/hooks/python-nudge.sh"
+[[ -x "$hook_path" ]] && assert_eq "ok" "ok" "hook installed and executable" \
+  || assert_eq "ok" "missing" "hook missing or not executable"
+
+test_case "installed hook emits ask JSON for python3"
+out=$(printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' | "$hook_path")
+assert_contains "$out" '"permissionDecision": "ask"' "hook works end-to-end"
+
+rm -rf "$tmp_home"
+
 summary
