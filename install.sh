@@ -117,6 +117,53 @@ install_hook() {
   echo "Installed: $target"
 }
 
+merge_settings() {
+  local settings="$HOME/.claude/settings.json"
+  mkdir -p "$HOME/.claude"
+  [[ -f "$settings" ]] || echo '{}' > "$settings"
+
+  # One-shot backup.
+  [[ -f "$settings.bak" ]] || cp "$settings" "$settings.bak"
+
+  local patch
+  patch=$(cat <<'JSON'
+{
+  "permissions": {
+    "allow": ["Bash(safe-python:*)", "Bash(safe-python3:*)"]
+  },
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/python-nudge.sh"}]
+    }]
+  }
+}
+JSON
+  )
+
+  # Deep-merge with dedupe:
+  # - permissions.allow: union (preserve order, drop duplicates)
+  # - hooks.PreToolUse: union by full structural equality (drop duplicates)
+  # - everything else: recursive merge, patch wins on scalar conflicts
+  local merged
+  merged=$(jq -n --argjson cur "$(cat "$settings")" --argjson new "$patch" '
+    def union_dedupe: . as $arr | reduce $arr[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
+    def merge($a; $b):
+      if ($a|type) == "object" and ($b|type) == "object" then
+        reduce ($a|keys + ($b|keys) | unique)[] as $k
+          ({}; .[$k] = (if ($a|has($k)) and ($b|has($k)) then merge($a[$k]; $b[$k])
+                        elif ($b|has($k)) then $b[$k]
+                        else $a[$k] end))
+      elif ($a|type) == "array" and ($b|type) == "array" then
+        ($a + $b) | union_dedupe
+      else $b
+      end;
+    merge($cur; $new)
+  ')
+  printf '%s\n' "$merged" > "$settings"
+  echo "Merged into: $settings"
+}
+
 usage() {
   cat <<EOF
 Usage: bash install.sh [--uninstall] [--help]

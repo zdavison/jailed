@@ -65,4 +65,52 @@ assert_contains "$out" '"permissionDecision": "ask"' "hook works end-to-end"
 
 rm -rf "$tmp_home"
 
+test_case "merge_settings adds allow rules and hook to empty settings.json"
+tmp_home=$(make_tmp)
+mkdir -p "$tmp_home/.claude"
+echo '{}' > "$tmp_home/.claude/settings.json"
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
+result=$(cat "$tmp_home/.claude/settings.json")
+assert_contains "$result" "Bash(safe-python:*)" "allow rule present"
+assert_contains "$result" "Bash(safe-python3:*)" "allow rule present"
+assert_contains "$result" "python-nudge.sh" "hook registered"
+
+test_case "merge_settings preserves unrelated existing config"
+tmp_home=$(make_tmp)
+mkdir -p "$tmp_home/.claude"
+cat > "$tmp_home/.claude/settings.json" <<'JSON'
+{
+  "permissions": { "allow": ["Bash(ls:*)"] },
+  "model": "claude-opus-4-7"
+}
+JSON
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
+result=$(cat "$tmp_home/.claude/settings.json")
+assert_contains "$result" "Bash(ls:*)" "existing allow rule preserved"
+assert_contains "$result" "claude-opus-4-7" "model preserved"
+assert_contains "$result" "Bash(safe-python:*)" "new allow rule added"
+
+test_case "merge_settings is idempotent (no duplicate entries)"
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
+result=$(cat "$tmp_home/.claude/settings.json")
+count=$(echo "$result" | jq '[.permissions.allow[] | select(. == "Bash(safe-python:*)")] | length')
+assert_eq "1" "$count" "safe-python allow rule deduped"
+hook_count=$(echo "$result" | jq '.hooks.PreToolUse | length')
+assert_eq "1" "$hook_count" "hook block deduped"
+
+test_case "merge_settings creates .bak on first run, not on second"
+tmp_home=$(make_tmp)
+mkdir -p "$tmp_home/.claude"
+echo '{"_v":1}' > "$tmp_home/.claude/settings.json"
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
+[[ -f "$tmp_home/.claude/settings.json.bak" ]] && assert_eq "ok" "ok" "backup created" \
+  || assert_eq "ok" "missing" "backup not created on first run"
+jq '._v = 99' "$tmp_home/.claude/settings.json.bak" > "$tmp_home/.claude/settings.json.bak.tmp" \
+  && mv "$tmp_home/.claude/settings.json.bak.tmp" "$tmp_home/.claude/settings.json.bak"
+PUPBOX_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
+bak_v=$(jq -r '._v' "$tmp_home/.claude/settings.json.bak")
+assert_eq "99" "$bak_v" "second run must not overwrite .bak"
+
+rm -rf "$tmp_home"
+
 summary
