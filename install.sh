@@ -19,12 +19,17 @@ set -euo pipefail
 
 read -r -d '' JAILED_SCRIPT <<'JP_EOF' || true
 #!/usr/bin/env bash
-# jailed: run an arbitrary command under a no-network, no-filesystem-write sandbox.
+# jailed: run a command under Anthropic Sandbox Runtime (SRT) with a
+# deny-all profile — no network, no filesystem writes, read-only view.
+# SRT abstracts the platform sandbox primitive: bubblewrap on Linux,
+# sandbox-exec on macOS. We configure it; we don't re-implement it.
+#
 # Invocation: jailed <cmd> [args...]
-# - Linux: bubblewrap with ephemeral tmpfs for $HOME, /tmp, /run
-# - macOS: sandbox-exec with a Seatbelt profile that denies network*
-#          and file-write* (except /dev sinks). No tmpfs on Darwin;
-#          writes fail outright — same no-side-effects contract.
+#
+# SRT's positional-arg form joins argv with spaces and passes to a
+# shell, which drops argv quoting. We use `srt -c <string>` with
+# printf %q escaping so the full argv (including embedded quotes)
+# survives intact through a single sh -c hop.
 
 set -u
 
@@ -33,37 +38,28 @@ if (( $# == 0 )); then
   exit 2
 fi
 
-if [[ "$(uname)" == "Darwin" ]]; then
-  exec sandbox-exec -p '(version 1)
-(deny default)
-(allow process*)
-(allow signal (target self))
-(allow mach-lookup)
-(allow ipc-posix*)
-(allow sysctl-read)
-(allow file-read*)
-(allow file-write*
-  (literal "/dev/null")
-  (literal "/dev/stdout")
-  (literal "/dev/stderr")
-  (literal "/dev/tty")
-  (literal "/dev/dtracehelper")
-  (regex "^/dev/fd/")
-  (regex "^/dev/ttys"))
-(deny network*)' "$@"
+# Settings resolution, in priority order:
+#   1. $JAILED_SRT_SETTINGS (tests and one-off overrides)
+#   2. Sibling config/ of this script (dev mode: repo checkout)
+#   3. $HOME/.config/jailed/srt-settings.json (installed mode)
+if [[ -n "${JAILED_SRT_SETTINGS:-}" ]]; then
+  settings="$JAILED_SRT_SETTINGS"
+else
+  here=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || true)
+  dev_settings="$here/config/srt-settings.json"
+  if [[ -n "$here" && -f "$dev_settings" ]]; then
+    settings="$dev_settings"
+  elif [[ -f "$HOME/.config/jailed/srt-settings.json" ]]; then
+    settings="$HOME/.config/jailed/srt-settings.json"
+  else
+    echo "jailed: no SRT settings found at \$HOME/.config/jailed/srt-settings.json." >&2
+    echo "      run 'bash install.sh' or set \$JAILED_SRT_SETTINGS." >&2
+    exit 2
+  fi
 fi
 
-exec bwrap \
-  --ro-bind / / \
-  --dev /dev \
-  --proc /proc \
-  --tmpfs /tmp \
-  --tmpfs /run \
-  --tmpfs "$HOME" \
-  --unshare-all \
-  --die-with-parent \
-  --new-session \
-  "$@"
+escaped=$(printf '%q ' "$@")
+exec srt -s "$settings" -c "$escaped"
 JP_EOF
 JAILED_SCRIPT+=$'\n'
 

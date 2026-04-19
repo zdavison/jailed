@@ -50,7 +50,10 @@ JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
   || assert_eq "ok" "missing" "jailed-python3 not present"
 
 test_case "installed jailed-python actually runs"
-out=$(echo hi | "$tmp/bin/jailed-python" -c 'import sys; print(sys.stdin.read().strip())')
+# install_bins only places binaries; SRT settings are installed separately,
+# so pass the repo-local settings explicitly to probe the binary in isolation.
+out=$(echo hi | JAILED_SRT_SETTINGS="$PWD/config/srt-settings.json" \
+  "$tmp/bin/jailed-python" -c 'import sys; print(sys.stdin.read().strip())')
 assert_eq "hi" "$out" "installed wrapper still functions"
 
 test_case "install_bins is idempotent (second run no error)"
