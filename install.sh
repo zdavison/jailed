@@ -445,16 +445,24 @@ run_install() {
   merge_settings
   strip_legacy_claude_md
 
-  cat <<'EOF'
-
-jailed installed.
-
-Quick test:
-  echo '<a href=x>' | jailed python3 -c 'import sys; print(sys.stdin.read())'
-
-Restart Claude Code (or run /config) to pick up the new hook and permissions.
-Edit ~/.config/jailed/commands to control which commands are auto-jailed.
-EOF
+  local cfg="$HOME/.config/jailed/commands"
+  echo
+  echo "jailed installed."
+  echo
+  echo "Claude's calls to these commands will be transparently sandboxed:"
+  # Indent each live entry for readability. grep -v strips comments/blanks.
+  grep -vE '^[[:space:]]*(#|$)' "$cfg" | sed 's/^/  /'
+  echo
+  echo "To enable jailing for another command (e.g. rscript):"
+  echo "  echo 'rscript' >> $cfg"
+  echo
+  echo "To disable jailing for a command, remove or '#'-comment its line in:"
+  echo "  $cfg"
+  echo
+  echo "Quick test:"
+  echo "  echo '<a href=x>' | jailed python3 -c 'import sys; print(sys.stdin.read())'"
+  echo
+  echo "Restart Claude Code (or run /config) to pick up the new hook and permissions."
 }
 
 usage() {
