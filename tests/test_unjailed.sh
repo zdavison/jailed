@@ -141,4 +141,25 @@ assert_contains "$out" "jailed python3" "only UNJAILED=1 triggers trust check"
 
 rm -rf "$CFG_DIR"
 
+# ---- Real-process smoke test ----
+
+test_case "real ps lookup: no UNJAILED + real ancestry → rewrite happens"
+# Unset JAILED_ANCESTRY_FIXTURE so the walker calls actual `ps`. With
+# UNJAILED unset the trust block is skipped entirely — this just confirms
+# the hook still rewrites in the normal case when running the new code
+# path. (Covers "did my change accidentally break the default flow?")
+tmp_cfg=$(make_tmp)/commands
+printf 'python3\n' > "$tmp_cfg"
+out=$(printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' \
+  | JAILED_CONFIG="$tmp_cfg" bash "$HOOK")
+assert_contains "$out" "jailed python3" "default flow still rewrites"
+
+test_case "real ps lookup: UNJAILED=1 with no legit unjailed ancestor → rewrite"
+# This test IS running the ancestry walk against the real process tree.
+# Ancestors: bash (this test) → bash (run-all) → shell / CI. None are
+# called `unjailed`, so trust check fails → rewrite.
+out=$(printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' \
+  | UNJAILED=1 JAILED_CONFIG="$tmp_cfg" bash "$HOOK")
+assert_contains "$out" "jailed python3" "spoofed UNJAILED=1 must not bypass"
+
 summary
