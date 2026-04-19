@@ -1,0 +1,13 @@
+# jailed: commands that Claude Code's rewriting hook automatically routes
+# through the sandbox. One command per line. Blank lines and `#` comments
+# are ignored. Edit ~/.config/jailed/commands to override.
+
+# Python — text processing default.
+python
+python3
+
+# Stream processors commonly invoked from Claude.
+jq
+awk
+sed
+grep
