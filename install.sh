@@ -97,6 +97,104 @@ cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
 
 [[ -z "$cmd" ]] && exit 0
 
+# --- Trust check for UNJAILED ---
+# If UNJAILED=1 is set AND process ancestry shows this hook was launched by
+# a `claude` whose topmost-claude-ancestor's parent is `unjailed`, stand
+# down (no rewrite → normal permission prompts). Anything else — including
+# a jailed Claude spawning `UNJAILED=1 claude -p ...` to forge the env var
+# — fails the check and we continue with the usual rewrite.
+#
+# Ancestry lookup: real `ps` by default; fixture file for tests.
+if [[ "${UNJAILED:-}" == "1" ]]; then
+  start_pid="${JAILED_ANCESTRY_START:-$$}"
+  python3 - "$start_pid" <<'PY'
+import os, sys, subprocess
+
+fixture = os.environ.get('JAILED_ANCESTRY_FIXTURE') or ''
+
+def lookup_ps(pid):
+    try:
+        out = subprocess.check_output(
+            ['ps', '-o', 'ppid=,comm=', '-p', str(pid)],
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except Exception:
+        return None
+    out = out.strip()
+    if not out:
+        return None
+    parts = out.split(None, 1)
+    if len(parts) < 2:
+        return None
+    ppid, comm = parts
+    # On Linux, `comm` can include a leading path or brackets; basename
+    # is good enough for our targets ("claude", "unjailed"). macOS BSD
+    # `ps` prints just the basename already.
+    comm = os.path.basename(comm.strip())
+    try:
+        return int(ppid), comm
+    except ValueError:
+        return None
+
+def lookup_fixture(pid):
+    try:
+        with open(fixture) as f:
+            for line in f:
+                parts = line.strip().split(None, 2)
+                if len(parts) < 3:
+                    continue
+                p, pp, c = parts
+                if int(p) == pid:
+                    return int(pp), c
+    except Exception:
+        return None
+    return None
+
+def lookup(pid):
+    return lookup_fixture(pid) if fixture else lookup_ps(pid)
+
+def topmost_claude_parent_comm(start):
+    # Build chain of (pid, comm) from start upward.
+    chain = []
+    pid = start
+    seen = set()
+    while pid and pid not in seen and pid != 1:
+        seen.add(pid)
+        res = lookup(pid)
+        if not res:
+            break
+        ppid, comm = res
+        chain.append((pid, comm))
+        if ppid == 0 or ppid == pid:
+            break
+        pid = ppid
+    # Topmost (highest-index) claude in the chain.
+    topmost = -1
+    for i, (_, c) in enumerate(chain):
+        if c == 'claude':
+            topmost = i
+    if topmost < 0:
+        return None
+    # Parent's comm is the next entry upward. If the chain ended right at
+    # the topmost claude, the parent is unreachable (pid<=1, cycle, or a
+    # dead process) — all of which mean it cannot be `unjailed`. Distrust.
+    if topmost + 1 >= len(chain):
+        return None
+    return chain[topmost + 1][1]
+
+start = int(sys.argv[1])
+parent = topmost_claude_parent_comm(start)
+sys.exit(0 if parent == 'unjailed' else 1)
+PY
+  if [[ $? -eq 0 ]]; then
+    # Trusted unjailed session — stand down, let the Bash call go through
+    # the normal permission flow.
+    exit 0
+  fi
+  # Untrusted UNJAILED (spoofed / attack) — fall through to the rewrite.
+fi
+# --- end trust check ---
+
 cfg="${JAILED_CONFIG:-$HOME/.config/jailed/commands}"
 targets=()
 if [[ -f "$cfg" ]]; then
