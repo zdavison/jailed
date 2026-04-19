@@ -29,7 +29,7 @@ I originally wrote Claude to support an unattended workflow for [pup](https://gi
 
 When telling `claude` to investigate an issue with `pup`, it would pipe all output to `python3` to format the API responses, and repeatedly ask me to approve permissions.
 
-I wasn't comfortable with adding a scripting environment (`python3`) to the permanent allowlist, so instead I wrote `jailed`.
+I wasn't comfortable with adding a Turing complete scripting environment (`python3`) to the permanent allowlist, so instead I wrote `jailed`.
 
 The general idea is that you won't be prompted for permissions for anything thats jailed, because it should be relatively safe.
 
