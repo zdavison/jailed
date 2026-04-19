@@ -175,16 +175,32 @@ read -r -d '' DEFAULT_COMMANDS <<'JP_EOF' || true
 # jailed: commands that Claude Code's rewriting hook automatically routes
 # through the sandbox. One command per line. Blank lines and `#` comments
 # are ignored. Edit ~/.config/jailed/commands to override.
+#
+# Rule of thumb: include Turing-complete scripting environments that
+# Claude tends to invoke inline (-c / -e) as text processors. They can
+# all reach network/files/subprocess if they want to, but most of the
+# time Claude uses them for pure data munging. Tools with no latent
+# capabilities (jq, grep, head/tail/cat/...) are deliberately omitted —
+# jailing them adds overhead without adding safety.
 
-# Python — text processing default.
+# Python
 python
 python3
 
-# Stream processors commonly invoked from Claude.
-jq
+# JavaScript / TypeScript runtimes
+node
+deno
+bun
+
+# Other scripting languages
+perl
+ruby
+php
+
+# Classical text processors (Turing-complete: awk has system(), GNU sed
+# has the `e` command and `w file`).
 awk
 sed
-grep
 JP_EOF
 
 read -r -d '' SRT_SETTINGS <<'JP_EOF' || true

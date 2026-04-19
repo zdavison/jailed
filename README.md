@@ -45,18 +45,16 @@ Original `settings.json` is backed up to `settings.json.bak` on first run. If yo
 
 ## Configure
 
-**`~/.config/jailed/commands`** — one command per line, `#` for comments. Claude's calls to any listed command get rewritten to `jailed <cmd> …` transparently. Defaults:
+**`~/.config/jailed/commands`** — one command per line, `#` for comments. Claude's calls to any listed command get rewritten to `jailed <cmd> …` transparently. Defaults cover the Turing-complete scripting environments Claude tends to use inline as text processors:
 
 ```
-python
-python3
-jq
-awk
-sed
-grep
+python  python3
+node    deno    bun
+perl    ruby    php
+awk     sed
 ```
 
-Edit freely. Add `ripgrep`, `yq`, or whatever else you want auto-sandboxed. Remove anything you want to run unfettered.
+Inherently safe tools (`jq`, `grep`, `head`, `tail`, `cat`, …) are **not** jailed by default — they have no file-write / network / subprocess capability to sandbox against, so jailing them would just add overhead. Add anything else you want sandboxed (e.g. `yq`, `lua`, `Rscript`), or remove entries to run them unfettered.
 
 **`~/.config/jailed/srt-settings.json`** — the SRT policy file. Default is
 deny-all (empty `allowWrite`, empty `allowedDomains`). See the
