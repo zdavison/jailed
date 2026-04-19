@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# jailed-python installer: sandboxed python3 + Claude Code integration.
+# jailed installer: generic command sandbox (via Anthropic SRT) +
+# transparent rewriting hook for Claude Code.
 #
 # Usage:
 #   curl -fsSL <url>/install.sh | bash
@@ -8,13 +9,14 @@
 # Env vars:
 #   PREFIX     Where to install binaries (default: /usr/local). Requires sudo if
 #              PREFIX is not writable.
-#   HOME       Root for ~/.claude/ edits (inherited).
+#   HOME       Root for ~/.claude/ and ~/.config/ edits (inherited).
 
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Embedded assets (kept byte-identical to bin/jailed, bin/jailed-python, and
-# hooks/python-nudge.sh via tests/test_installer.sh).
+# Embedded assets — kept byte-identical to bin/jailed, bin/jailed-python,
+# hooks/jailed-hook.sh, config/commands.default, and config/srt-settings.json
+# via tests/test_installer.sh. Edit both when changing either.
 # -----------------------------------------------------------------------------
 
 read -r -d '' JAILED_SCRIPT <<'JP_EOF' || true
@@ -72,32 +74,111 @@ exec "$(dirname "$0")/jailed" python3 "$@"
 JP_EOF
 JAILED_PYTHON_SCRIPT+=$'\n'
 
-read -r -d '' PYTHON_NUDGE_SCRIPT <<'JP_EOF' || true
+read -r -d '' JAILED_HOOK_SCRIPT <<'JP_EOF' || true
 #!/usr/bin/env bash
-# PreToolUse hook: nudge Claude toward jailed-python when it tries to run raw python/python3.
-# - permissionDecisionReason is shown to the *user* in the approval prompt.
-# - additionalContext is fed back into *Claude's* context so the model itself
-#   learns to prefer jailed-python; without this, the reason is invisible to the
-#   model and Claude keeps re-proposing python3.
+# PreToolUse hook: transparently wrap commands in `jailed` before Bash runs them.
+#
+# Reads the list of commands to jail from (in order):
+#   1. $JAILED_CONFIG (for tests / one-off overrides)
+#   2. $HOME/.config/jailed/commands
+#   3. Built-in fallback (python3 python jq awk sed grep)
+#
+# Rewrite strategy: at shell-token boundaries (start-of-string, or after
+# |, &, ;, `, $(, (, {), prepend `jailed ` to any listed command. This
+# handles pipelines, &&, and $(...) naturally. It does NOT handle:
+#   - env FOO=bar python3 (command is not at token boundary)
+#   - commands embedded inside single-quoted strings that themselves
+#     contain shell separators (e.g. `echo ';python3'`) — false positive
+# The rewrite is an `allow` + `updatedInput` output, so Bash runs the
+# substituted command without an approval prompt.
+
+set -u
 
 input=$(cat)
 cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
 
-# Match python or python3 as a standalone command, anchored to start-of-string or a
-# shell separator. Excludes jailed-python, jailed-python3, python3.N, pythonX, etc.
-if echo "$cmd" | grep -qE '(^|[|&;`]|\$\()[[:space:]]*python3?([[:space:]]|$)'; then
-  jq -n '{
+[[ -z "$cmd" ]] && exit 0
+
+cfg="${JAILED_CONFIG:-$HOME/.config/jailed/commands}"
+targets=()
+if [[ -f "$cfg" ]]; then
+  # bash 3.2-compatible (no mapfile): read lines into the array, dropping
+  # blanks and # comments.
+  while IFS= read -r line; do
+    targets+=("$line")
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$cfg")
+else
+  targets=(python3 python jq awk sed grep)
+fi
+
+# Nothing to do if the list is empty.
+(( ${#targets[@]} == 0 )) && exit 0
+
+alt_joined=$(IFS='|'; echo "${targets[*]}")
+
+rewritten=$(python3 - "$cmd" "$alt_joined" <<'PY'
+import re, sys
+cmd, alts = sys.argv[1], sys.argv[2].split('|')
+# Escape each command for regex; longer names first so `python3` matches
+# before `python` would.
+alts.sort(key=len, reverse=True)
+alt_re = '|'.join(re.escape(a) for a in alts if a)
+# Pattern: (shell-token boundary)(optional spaces)(target command)(word break)
+# The \b at the tail keeps us from matching prefixes (python3script.sh).
+pattern = rf'(^|[|&;`({{]|\$\()(\s*)({alt_re})\b'
+def sub(m):
+    start, end = m.start(3), m.end(3)
+    # Skip version-suffixed binaries (python3.11, python3.12, ...).
+    # \b matches between a word char and `.`, so the bare \b anchor at
+    # the tail doesn't reject them. Look one char past the match.
+    if end < len(cmd) and cmd[end] == '.' and end + 1 < len(cmd) and cmd[end+1].isdigit():
+        return m.group(0)
+    # Don't double-jail: if the preceding token was already `jailed`,
+    # leave it alone.
+    preceding = cmd[:start].rstrip()
+    if preceding.endswith('jailed'):
+        return m.group(0)
+    # (Note: `jailed-python -c …` is already pass-through without this
+    # dodge — `python` in `jailed-python` is preceded by `-`, which is
+    # not in the shell-token boundary char class, so the match never
+    # fires at that position.)
+    return f'{m.group(1)}{m.group(2)}jailed {m.group(3)}'
+out = re.sub(pattern, sub, cmd)
+sys.stdout.write(out)
+PY
+)
+
+# Only emit JSON if we actually changed the command. A no-op rewrite
+# should stay silent so unrelated Bash calls are untouched.
+if [[ "$rewritten" != "$cmd" ]]; then
+  jq -n --arg new "$rewritten" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      permissionDecision: "ask",
-      permissionDecisionReason: "Prefer jailed-python (pre-approved, sandboxed: no network, no filesystem writes) for text processing. Only continue with python3 if you genuinely need network, file writes, subprocess, or full stdlib access.",
-      additionalContext: "jailed-python and jailed-python3 are pre-approved, sandboxed wrappers around /usr/bin/python3 with no network access and no filesystem writes. Prefer them for text processing in pipelines (stdin->stdout, no side effects). Only reach for raw python3 when you genuinely need network, file writes, subprocess spawning, or packages outside the stdlib."
+      permissionDecision: "allow",
+      updatedInput: { command: $new },
+      additionalContext: "Commands listed in ~/.config/jailed/commands are automatically routed through `jailed` — a sandboxed wrapper with no network and no filesystem writes. Your tool call was rewritten transparently; if you genuinely need network/writes/subprocess, invoke python3 (etc.) via a form the hook will not match (for example, prefix with env VAR=value)."
     }
   }'
 fi
 exit 0
 JP_EOF
-PYTHON_NUDGE_SCRIPT+=$'\n'
+JAILED_HOOK_SCRIPT+=$'\n'
+
+read -r -d '' DEFAULT_COMMANDS <<'JP_EOF' || true
+# jailed: commands that Claude Code's rewriting hook automatically routes
+# through the sandbox. One command per line. Blank lines and `#` comments
+# are ignored. Edit ~/.config/jailed/commands to override.
+
+# Python — text processing default.
+python
+python3
+
+# Stream processors commonly invoked from Claude.
+jq
+awk
+sed
+grep
+JP_EOF
 
 read -r -d '' SRT_SETTINGS <<'JP_EOF' || true
 {
@@ -132,8 +213,6 @@ check_deps() {
         echo "  npm install -g @anthropic-ai/sandbox-runtime" >&2
         return 1
       fi
-      # Re-check on PATH (npm -g might need a fresh shell; this catches it
-      # in the current install invocation if the bin dir is already wired).
       if ! command -v srt >/dev/null 2>&1; then
         echo "npm install completed but 'srt' is still not on PATH." >&2
         echo "Check \$(npm bin -g) is in your PATH and retry." >&2
@@ -163,7 +242,6 @@ check_deps() {
   return 0
 }
 
-# Run a command with sudo iff the target path is not user-writable.
 _maybe_sudo() {
   local target="$1"; shift
   if [[ -w "$target" ]] || { [[ ! -e "$target" ]] && [[ -w "$(dirname "$target")" ]]; }; then
@@ -191,11 +269,10 @@ install_bins() {
     fi
   done
 
-  # Install the generic jailed sandbox wrapper first (jailed-python shims to it).
+  # Install the generic jailed wrapper first (jailed-python shims to it).
   printf '%s\n' "$JAILED_SCRIPT" | _maybe_sudo "$jailed_target" tee "$jailed_target" >/dev/null
   _maybe_sudo "$jailed_target" chmod 755 "$jailed_target"
 
-  # Write via tee so sudo flows naturally.
   printf '%s\n' "$JAILED_PYTHON_SCRIPT" | _maybe_sudo "$target" tee "$target" >/dev/null
   _maybe_sudo "$target" chmod 755 "$target"
 
@@ -210,11 +287,31 @@ install_bins() {
 
 install_hook() {
   local hooks_dir="$HOME/.claude/hooks"
-  local target="$hooks_dir/python-nudge.sh"
   mkdir -p "$hooks_dir"
-  printf '%s\n' "$PYTHON_NUDGE_SCRIPT" > "$target"
+  # Drop any legacy hook from prior installs so upgraders don't keep both.
+  for legacy in python-nudge.sh; do
+    if [[ -e "$hooks_dir/$legacy" ]]; then
+      rm -f "$hooks_dir/$legacy"
+      echo "Removed legacy: $hooks_dir/$legacy"
+    fi
+  done
+  local target="$hooks_dir/jailed-hook.sh"
+  printf '%s\n' "$JAILED_HOOK_SCRIPT" > "$target"
   chmod 755 "$target"
   echo "Installed: $target"
+}
+
+install_config() {
+  local cfg_dir="$HOME/.config/jailed"
+  local cfg="$cfg_dir/commands"
+  mkdir -p "$cfg_dir"
+  # Never overwrite an existing user config. If present, leave it alone.
+  if [[ -f "$cfg" ]]; then
+    echo "Preserved existing: $cfg"
+    return 0
+  fi
+  printf '%s' "$DEFAULT_COMMANDS" > "$cfg"
+  echo "Installed: $cfg"
 }
 
 install_srt_settings() {
@@ -236,12 +333,10 @@ merge_settings() {
   mkdir -p "$HOME/.claude"
   [[ -f "$settings" ]] || echo '{}' > "$settings"
 
-  # One-shot backup.
   [[ -f "$settings.bak" ]] || cp "$settings" "$settings.bak"
 
-  # Strip stale allow rules from prior installs before merging. Without this,
-  # a user upgrading from safe-python would end up with both the legacy rule
-  # and the current jailed-python rule side-by-side.
+  # Strip stale allow rules and legacy hook registrations before merging,
+  # so upgraders don't keep both generations side by side.
   local pruned
   pruned=$(jq '
     if .permissions.allow then
@@ -249,6 +344,11 @@ merge_settings() {
         . != "Bash(safe-python:*)" and . != "Bash(safe-python3:*)"
       ))
     else . end
+    | if .hooks.PreToolUse then
+        .hooks.PreToolUse |= map(select(
+          [.hooks[]?.command] | all(. != "$HOME/.claude/hooks/python-nudge.sh")
+        ))
+      else . end
   ' "$settings")
   printf '%s\n' "$pruned" > "$settings"
 
@@ -256,12 +356,12 @@ merge_settings() {
   patch=$(cat <<'JSON'
 {
   "permissions": {
-    "allow": ["Bash(jailed-python:*)", "Bash(jailed-python3:*)"]
+    "allow": ["Bash(jailed:*)", "Bash(jailed-python:*)", "Bash(jailed-python3:*)"]
   },
   "hooks": {
     "PreToolUse": [{
       "matcher": "Bash",
-      "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/python-nudge.sh"}]
+      "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/jailed-hook.sh"}]
     }]
   }
 }
@@ -291,35 +391,12 @@ JSON
   echo "Merged into: $settings"
 }
 
-upsert_claude_md() {
+strip_legacy_claude_md() {
   local md="$HOME/.claude/CLAUDE.md"
-  mkdir -p "$HOME/.claude"
-  [[ -f "$md" ]] || : > "$md"
-
-  local block
-  block=$(cat <<'MD'
-<!-- jailed-python:policy:start -->
-## Python execution policy
-
-- **Default: `jailed-python` / `jailed-python3`** for text processing in
-  pipelines (e.g. `pup ... | jailed-python -c '...'`). Pre-approved, no
-  prompt. Read-only filesystem, no network — ideal for parsing/transforming
-  stdin to stdout.
-- **Escape hatch: `python3`** when you actually need network, file writes,
-  subprocess, or real project scripts/tests. Will prompt with a reminder;
-  confirm when the need is real.
-
-Decision rule: if the Python code reads stdin and prints to stdout with no
-side effects, use `jailed-python`. Otherwise `python3`.
-<!-- jailed-python:policy:end -->
-MD
-  )
-
-  # Strip any existing delimited block. Handles current marker + two legacy
-  # marker generations (safe-python:policy from last rename, pupbox:python-policy
-  # from original) so upgrading installs never leave orphaned blocks.
-  local cleaned
-  cleaned=$(python3 - "$md" <<'PY'
+  [[ -f "$md" ]] || return 0
+  # The new hook steers Claude automatically via additionalContext; no need
+  # for a written policy stanza. Strip any from prior generations.
+  python3 - "$md" <<'PY'
 import re, sys
 path = sys.argv[1]
 with open(path) as f:
@@ -329,39 +406,31 @@ for start, end in (
     ('safe-python:policy:start', 'safe-python:policy:end'),
     ('pupbox:python-policy:start', 'pupbox:python-policy:end'),
 ):
-    s = re.sub(
-        rf'<!-- {start} -->.*?<!-- {end} -->\n?',
-        '', s, flags=re.DOTALL)
-# Trim trailing blank lines so we don't keep accumulating them.
+    s = re.sub(rf'<!-- {start} -->.*?<!-- {end} -->\n?', '', s, flags=re.DOTALL)
 s = s.rstrip() + ('\n' if s.strip() else '')
-sys.stdout.write(s)
+with open(path, 'w') as f:
+    f.write(s)
 PY
-  )
-
-  {
-    printf '%s' "$cleaned"
-    [[ -n "$cleaned" ]] && printf '\n'
-    printf '%s\n' "$block"
-  } > "$md"
-  echo "Updated: $md"
 }
 
 run_install() {
   check_deps
   install_bins
   install_srt_settings
+  install_config
   install_hook
   merge_settings
-  upsert_claude_md
+  strip_legacy_claude_md
 
   cat <<'EOF'
 
-jailed-python installed.
+jailed installed.
 
 Quick test:
-  echo '<a href=x>' | jailed-python -c 'import sys; print(sys.stdin.read())'
+  echo '<a href=x>' | jailed python3 -c 'import sys; print(sys.stdin.read())'
 
 Restart Claude Code (or run /config) to pick up the new hook and permissions.
+Edit ~/.config/jailed/commands to control which commands are auto-jailed.
 EOF
 }
 
@@ -369,8 +438,8 @@ usage() {
   cat <<EOF
 Usage: bash install.sh [--uninstall] [--help]
 
-Installs jailed-python + jailed-python3 wrappers and configures Claude Code
-to prefer them over raw python3.
+Installs jailed + jailed-python + jailed-python3 wrappers and configures
+Claude Code to transparently route listed commands through the sandbox.
 
 Options:
   --uninstall   Remove installed files and revert Claude Code config.
@@ -385,8 +454,7 @@ run_uninstall() {
   local prefix="${PREFIX:-/usr/local}"
   local bindir="$prefix/bin"
 
-  # Remove current and all legacy-generation binaries so uninstall is total
-  # regardless of which version the user last installed.
+  # Remove current and all legacy-generation binaries.
   for f in jailed jailed-python jailed-python3 safe-python safe-python3; do
     if [[ -e "$bindir/$f" || -L "$bindir/$f" ]]; then
       _maybe_sudo "$bindir/$f" rm -f "$bindir/$f"
@@ -394,53 +462,40 @@ run_uninstall() {
     fi
   done
 
-  local hook="$HOME/.claude/hooks/python-nudge.sh"
-  [[ -e "$hook" ]] && { rm -f "$hook"; echo "Removed: $hook"; }
+  # Current hook + legacy hook.
+  for hook_name in jailed-hook.sh python-nudge.sh; do
+    local hpath="$HOME/.claude/hooks/$hook_name"
+    [[ -e "$hpath" ]] && { rm -f "$hpath"; echo "Removed: $hpath"; }
+  done
 
   local settings="$HOME/.claude/settings.json"
   if [[ -f "$settings" ]]; then
     jq '
       if .permissions.allow then
         .permissions.allow |= map(select(
-          . != "Bash(jailed-python:*)" and . != "Bash(jailed-python3:*)" and
-          . != "Bash(safe-python:*)"   and . != "Bash(safe-python3:*)"
+          . != "Bash(jailed:*)"          and . != "Bash(jailed-python:*)" and
+          . != "Bash(jailed-python3:*)"  and
+          . != "Bash(safe-python:*)"     and . != "Bash(safe-python3:*)"
         ))
       else . end
       | if .hooks.PreToolUse then
           .hooks.PreToolUse |= map(select(
-            [.hooks[]?.command] | all(. != "$HOME/.claude/hooks/python-nudge.sh")
+            [.hooks[]?.command] | all(
+              . != "$HOME/.claude/hooks/jailed-hook.sh" and
+              . != "$HOME/.claude/hooks/python-nudge.sh"
+            )
           ))
         else . end
     ' "$settings" > "$settings.tmp" && mv "$settings.tmp" "$settings"
     echo "Cleaned: $settings"
   fi
 
-  local md="$HOME/.claude/CLAUDE.md"
-  if [[ -f "$md" ]]; then
-    python3 - "$md" <<'PY'
-import re, sys
-path = sys.argv[1]
-with open(path) as f:
-    s = f.read()
-# Strip current marker and all legacy marker generations so uninstall is
-# total regardless of when the user last installed.
-for start, end in (
-    ('jailed-python:policy:start', 'jailed-python:policy:end'),
-    ('safe-python:policy:start', 'safe-python:policy:end'),
-    ('pupbox:python-policy:start', 'pupbox:python-policy:end'),
-):
-    s = re.sub(
-        rf'<!-- {start} -->.*?<!-- {end} -->\n?',
-        '', s, flags=re.DOTALL)
-s = s.rstrip() + ('\n' if s.strip() else '')
-with open(path, 'w') as f:
-    f.write(s)
-PY
-    echo "Cleaned: $md"
-  fi
+  strip_legacy_claude_md
+  [[ -f "$HOME/.claude/CLAUDE.md" ]] && echo "Cleaned: $HOME/.claude/CLAUDE.md"
 
   echo
-  echo "jailed-python uninstalled. (Backup at $settings.bak remains if you want to restore.)"
+  echo "jailed uninstalled. (Backup at $settings.bak remains if you want to restore.)"
+  echo "Your configs at ~/.config/jailed/ were left in place."
 }
 
 main() {
