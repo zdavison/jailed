@@ -19,6 +19,13 @@ SRT abstracts the platform sandbox primitive — `bubblewrap` on Linux,
 `sandbox-exec` on macOS — so the same `jailed <cmd>` contract holds on
 both OSes. We configure SRT; we don't re-implement the sandbox.
 
+## Why?
+
+I originally wrote Claude to support an unattended workflow for [pup](https://github.com/datadog-labs/pup).
+When telling `claude` to investigate an issue with `pup`, it would pipe all output to `python3` to format the API responses, and repeatedly ask me to approve permissions.
+I wasn't comfortable with adding a scripting environment (`python3`) to the permanent allowlist, so instead I wrote `jailed`.
+The general idea is that you won't be prompted for permissions for anything thats jailed, because it should be relatively safe.
+
 ## Install
 
     curl -fsSL https://raw.githubusercontent.com/zdavison/jailed/main/install.sh | bash
