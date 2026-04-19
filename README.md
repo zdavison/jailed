@@ -2,6 +2,10 @@
 
 A simple command sandbox, just prefix with `jailed` to sandbox.
 
+```bash
+echo '<a href=x>' | jailed python3 -c 'import sys; print(sys.stdin.read())'
+```
+
 Built for `claude`, and on install will configure a `PreToolUse` hook that will automatically prefix uses of common inline scripting tools with `jailed`.
 
 `jailed` commands are also automatically added to your approval whitelist, so you don't need to approve tool use requests for `jailed` commands.
