@@ -33,16 +33,9 @@ out=$(printf '%s' '{"tool_input":{"command":"jailed python3 -c \"print(1)\""}}' 
   | JAILED_CONFIG="$tmp_home/.config/jailed/commands" bash "$hook")
 assert_eq "" "$out" "no double-jail"
 
-test_case "installed hook stays silent on the jailed-python shim"
-out=$(printf '%s' '{"tool_input":{"command":"jailed-python -c \"print(1)\""}}' \
-  | JAILED_CONFIG="$tmp_home/.config/jailed/commands" bash "$hook")
-assert_eq "" "$out" "shim path is already sandboxed"
-
 test_case "settings.json has new allow rules + hook registration"
 settings=$(cat "$tmp_home/.claude/settings.json")
 assert_contains "$settings" '"Bash(jailed:*)"'         "generic allow rule"
-assert_contains "$settings" '"Bash(jailed-python:*)"'  "python shim allow rule"
-assert_contains "$settings" '"Bash(jailed-python3:*)"' "python3 shim allow rule"
 assert_contains "$settings" "jailed-hook.sh"           "new hook registered"
 assert_not_contains "$settings" "python-nudge.sh"      "legacy hook NOT registered"
 

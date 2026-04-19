@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-This repo ships `jailed` — a thin wrapper around Anthropic Sandbox Runtime (`srt`) configured for deny-all (no network, no writes) — plus a Claude Code PreToolUse hook that transparently rewrites listed commands (from `~/.config/jailed/commands`) to run through `jailed`. `jailed-python` / `jailed-python3` are convenience shims over `jailed python3`. Supported on **Linux** and **macOS** — SRT handles the platform difference (bwrap vs sandbox-exec).
+This repo ships `jailed` — a thin wrapper around Anthropic Sandbox Runtime (`srt`) configured for deny-all (no network, no writes) — plus a Claude Code PreToolUse hook that transparently rewrites listed commands (from `~/.config/jailed/commands`) to run through `jailed`. Supported on **Linux** and **macOS** — SRT handles the platform difference (bwrap vs sandbox-exec).
 
 Rename history: `pupbox` → `safe-python` → `jailed-python` → current generic `jailed`. Installer migration code silently removes legacy binaries, allow rules, hook registrations, and CLAUDE.md marker blocks from every prior generation. Don't delete that code without a replacement plan — there are real users with those prior-generation artifacts.
 
 ## Common commands
 
 ```bash
-bash tests/run-all.sh              # run full test suite (5 files, ~130 assertions)
+bash tests/run-all.sh              # run full test suite (4 files)
 bash tests/test_jailed.sh          # one file at a time
 bash install.sh --help             # installer CLI
 HOME=/tmp/h PREFIX=/tmp/p bash install.sh           # sandboxed install for manual checks
@@ -22,16 +22,15 @@ No build, no lint, no package manager — bash + a single installer script.
 
 ## Architecture
 
-Four user-visible artifacts + an installer that stitches them into Claude Code:
+Three user-visible artifacts + an installer that stitches them into Claude Code:
 
 1. **`bin/jailed`** — ~30-line bash wrapper. `jailed <cmd> [args…]` resolves an SRT settings file (env override → repo-local dev file → `~/.config/jailed/srt-settings.json`), then `exec srt -s <settings> -c <printf-%q-escaped-argv>`. We use SRT's `-c` with `printf %q` escaping because SRT's positional-arg form joins argv with spaces through a shell, which drops quoting.
-2. **`bin/jailed-python`** — shim: `exec "$(dirname "$0")/jailed" python3 "$@"`. `jailed-python3` is a symlink to it. Both exist for direct human use and backward compatibility with the prior generation.
-3. **`hooks/jailed-hook.sh`** — PreToolUse hook. Reads `$JAILED_CONFIG` (tests) or `~/.config/jailed/commands` (runtime) or falls back to built-in defaults. For each listed command, rewrites occurrences at shell-token boundaries (`^`, `|`, `&`, `;`, `` ` ``, `$(`, `(`, `{`) to prepend `jailed`. Emits `permissionDecision: allow` + `updatedInput.command` — so Bash runs the rewritten command without prompting.
-4. **`config/commands.default`** — packaged default list of commands to auto-jail. Installed to `~/.config/jailed/commands` only if absent. Plus `config/srt-settings.json` → `~/.config/jailed/srt-settings.json`, same no-overwrite semantics. User edits are sacred.
+2. **`hooks/jailed-hook.sh`** — PreToolUse hook. Reads `$JAILED_CONFIG` (tests) or `~/.config/jailed/commands` (runtime) or falls back to built-in defaults. For each listed command, rewrites occurrences at shell-token boundaries (`^`, `|`, `&`, `;`, `` ` ``, `$(`, `(`, `{`) to prepend `jailed`. Emits `permissionDecision: allow` + `updatedInput.command` — so Bash runs the rewritten command without prompting.
+3. **`config/commands.default`** — packaged default list of commands to auto-jail. Installed to `~/.config/jailed/commands` only if absent. Plus `config/srt-settings.json` → `~/.config/jailed/srt-settings.json`, same no-overwrite semantics. User edits are sacred.
 
 ### Non-obvious invariants
 
-- **`install.sh` embeds byte-identical copies** of `bin/jailed`, `bin/jailed-python`, `hooks/jailed-hook.sh`, `config/commands.default`, and `config/srt-settings.json` as heredoc strings (`JAILED_SCRIPT`, `JAILED_PYTHON_SCRIPT`, `JAILED_HOOK_SCRIPT`, `DEFAULT_COMMANDS`, `SRT_SETTINGS`). Makes `curl | bash` work with no other files. `tests/test_installer.sh` fails if any embedded copy diverges from its source — **edit both when changing either.**
+- **`install.sh` embeds byte-identical copies** of `bin/jailed`, `hooks/jailed-hook.sh`, `config/commands.default`, and `config/srt-settings.json` as heredoc strings (`JAILED_SCRIPT`, `JAILED_HOOK_SCRIPT`, `DEFAULT_COMMANDS`, `SRT_SETTINGS`). Makes `curl | bash` work with no other files. `tests/test_installer.sh` fails if any embedded copy diverges from its source — **edit both when changing either.**
 - **Every installer step is idempotent, reversible, and rename-safe.** `install_bins` removes legacy `safe-python`/`safe-python3` before writing the current generation. `install_hook` removes legacy `python-nudge.sh` before writing `jailed-hook.sh`. `install_config` and `install_srt_settings` never overwrite existing user files. `merge_settings` prunes legacy `Bash(safe-python:*)` allow rules and `python-nudge.sh` hook registrations before merging. `strip_legacy_claude_md` removes every generation of policy marker blocks. `--uninstall` removes all generations of binaries, allow rules, and hook registrations — but leaves `~/.config/jailed/` (user data) in place. Tests enforce every one of these.
 - **Hook rewrite is string-regex, not AST.** Known false negatives: `env FOO=bar python3` (command not at a token boundary). Known false positives: listed command tokens appearing inside single-quoted strings that also contain `;` or `|`. Version-suffixed binaries (`python3.11`) are explicitly excluded via a post-match char check in the Python rewriter. Acceptable for MVP; if we ever need precision, move to a bash-AST-aware rewriter.
 - **macOS bash is 3.2.** The hook avoids `mapfile` (bash 4+) and carefully initializes arrays so `set -u` is safe even on empty config files. Keep that discipline.
@@ -47,7 +46,6 @@ Four user-visible artifacts + an installer that stitches them into Claude Code:
 - Each test file ends with `summary` which exits non-zero on any failure.
 - `run-all.sh` iterates `tests/test_*.sh` and reports aggregate pass/fail.
 - **`test_jailed.sh`** exercises the real sandbox via `bin/jailed` — needs `srt` on PATH.
-- **`test_wrapper.sh`** exercises the shim path (`bin/jailed-python`) — same requirement.
 - **`test_hook.sh`** exercises the rewriter purely as a string-transformer — runs anywhere with `bash`/`jq`/`python3`.
 - **`test_installer.sh`** exercises individual installer functions in sandboxed HOME/PREFIX — no `srt` needed for most assertions (except the "installed wrapper still functions" case which sets `JAILED_SRT_SETTINGS` to the repo's config file explicitly).
 - **`test_e2e.sh`** does a full install + invokes the installed binary + feeds JSON through the installed hook. Needs `srt`.

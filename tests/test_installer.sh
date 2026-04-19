@@ -16,11 +16,6 @@ embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$JA
 actual=$(cat bin/jailed)
 assert_eq "$actual" "$embedded" "embedded jailed diverged from bin/jailed"
 
-test_case "embedded JAILED_PYTHON_SCRIPT matches bin/jailed-python"
-embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$JAILED_PYTHON_SCRIPT"')
-actual=$(cat bin/jailed-python)
-assert_eq "$actual" "$embedded" "embedded shim diverged from bin/jailed-python"
-
 test_case "embedded JAILED_HOOK_SCRIPT matches hooks/jailed-hook.sh"
 embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$JAILED_HOOK_SCRIPT"')
 actual=$(cat hooks/jailed-hook.sh)
@@ -56,22 +51,17 @@ assert_contains "$out" "sandbox-runtime" "message points at the npm package"
 
 # ---- install_bins ----
 
-test_case "install_bins places jailed, jailed-python and jailed-python3 under \$PREFIX/bin"
+test_case "install_bins places jailed under \$PREFIX/bin"
 tmp=$(make_tmp)
 JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
 [[ -x "$tmp/bin/jailed" ]] && assert_eq "ok" "ok" "jailed installed and executable" \
   || assert_eq "ok" "missing" "jailed not executable or missing"
-[[ -x "$tmp/bin/jailed-python" ]] && assert_eq "ok" "ok" "jailed-python installed and executable" \
-  || assert_eq "ok" "missing" "jailed-python not executable or missing"
-[[ -L "$tmp/bin/jailed-python3" || -x "$tmp/bin/jailed-python3" ]] \
-  && assert_eq "ok" "ok" "jailed-python3 present" \
-  || assert_eq "ok" "missing" "jailed-python3 not present"
 
-test_case "installed jailed-python actually runs"
+test_case "installed jailed actually runs"
 # install_bins places binaries; SRT settings are a separate step, so pass
 # them explicitly here to probe the binary in isolation.
 out=$(echo hi | JAILED_SRT_SETTINGS="$PWD/config/srt-settings.json" \
-  "$tmp/bin/jailed-python" -c 'import sys; print(sys.stdin.read().strip())')
+  "$tmp/bin/jailed" python3 -c 'import sys; print(sys.stdin.read().strip())')
 assert_eq "hi" "$out" "installed wrapper still functions"
 
 test_case "install_bins is idempotent (second run no error)"
@@ -88,8 +78,8 @@ JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
   || assert_eq "ok" "present" "legacy safe-python not cleaned up"
 [[ ! -e "$tmp/bin/safe-python3" ]] && assert_eq "ok" "ok" "legacy safe-python3 removed" \
   || assert_eq "ok" "present" "legacy safe-python3 not cleaned up"
-[[ -x "$tmp/bin/jailed-python" ]]  && assert_eq "ok" "ok" "jailed-python still in place" \
-  || assert_eq "ok" "missing" "jailed-python missing after legacy cleanup"
+[[ -x "$tmp/bin/jailed" ]]  && assert_eq "ok" "ok" "jailed still in place" \
+  || assert_eq "ok" "missing" "jailed missing after legacy cleanup"
 
 rm -rf "$tmp"
 
@@ -171,8 +161,6 @@ echo '{}' > "$tmp_home/.claude/settings.json"
 JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; HOME='$tmp_home' merge_settings"
 result=$(cat "$tmp_home/.claude/settings.json")
 assert_contains "$result" "Bash(jailed:*)"         "generic allow rule present"
-assert_contains "$result" "Bash(jailed-python:*)"  "python shim allow rule present"
-assert_contains "$result" "Bash(jailed-python3:*)" "python3 shim allow rule present"
 assert_contains "$result" "jailed-hook.sh"         "new hook registered"
 assert_not_contains "$result" "python-nudge.sh"    "legacy hook NOT registered on fresh install"
 
@@ -281,10 +269,8 @@ tmp_home=$(make_tmp)
 tmp_prefix=$(make_tmp)
 HOME="$tmp_home" PREFIX="$tmp_prefix" bash install.sh
 assert_exit 0 $? "installer exits 0"
-for name in jailed jailed-python jailed-python3; do
-  [[ -x "$tmp_prefix/bin/$name" || -L "$tmp_prefix/bin/$name" ]] \
-    && assert_eq "ok" "ok" "$name placed"   || assert_eq "ok" "no" "$name missing"
-done
+[[ -x "$tmp_prefix/bin/jailed" ]] \
+  && assert_eq "ok" "ok" "jailed placed"   || assert_eq "ok" "no" "jailed missing"
 [[ -x "$tmp_home/.claude/hooks/jailed-hook.sh" ]] && assert_eq "ok" "ok" "hook placed" || assert_eq "ok" "no" "hook missing"
 [[ -f "$tmp_home/.config/jailed/commands" ]] && assert_eq "ok" "ok" "commands config placed" || assert_eq "ok" "no" "commands config missing"
 [[ -f "$tmp_home/.config/jailed/srt-settings.json" ]] && assert_eq "ok" "ok" "SRT settings placed" || assert_eq "ok" "no" "SRT settings missing"
@@ -308,10 +294,8 @@ tmp_prefix=$(make_tmp)
 HOME="$tmp_home" PREFIX="$tmp_prefix" bash install.sh >/dev/null
 HOME="$tmp_home" PREFIX="$tmp_prefix" bash install.sh --uninstall
 assert_exit 0 $? "uninstall exits 0"
-for name in jailed jailed-python jailed-python3; do
-  [[ ! -e "$tmp_prefix/bin/$name" ]] && assert_eq "ok" "ok" "$name removed" \
-    || assert_eq "ok" "no" "$name still present"
-done
+[[ ! -e "$tmp_prefix/bin/jailed" ]] && assert_eq "ok" "ok" "jailed removed" \
+  || assert_eq "ok" "no" "jailed still present"
 [[ ! -e "$tmp_home/.claude/hooks/jailed-hook.sh" ]] && assert_eq "ok" "ok" "new hook removed" || assert_eq "ok" "no" "new hook still present"
 settings=$(cat "$tmp_home/.claude/settings.json")
 assert_not_contains "$settings" "Bash(jailed"   "jailed allow rules removed"

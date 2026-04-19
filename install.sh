@@ -14,9 +14,9 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Embedded assets — kept byte-identical to bin/jailed, bin/jailed-python,
-# hooks/jailed-hook.sh, config/commands.default, and config/srt-settings.json
-# via tests/test_installer.sh. Edit both when changing either.
+# Embedded assets — kept byte-identical to bin/jailed, hooks/jailed-hook.sh,
+# config/commands.default, and config/srt-settings.json via
+# tests/test_installer.sh. Edit both when changing either.
 # -----------------------------------------------------------------------------
 
 read -r -d '' JAILED_SCRIPT <<'JP_EOF' || true
@@ -71,15 +71,6 @@ escaped=$(printf '%q ' "$@")
 exec srt -s "$settings" -c "$escaped"
 JP_EOF
 JAILED_SCRIPT+=$'\n'
-
-read -r -d '' JAILED_PYTHON_SCRIPT <<'JP_EOF' || true
-#!/usr/bin/env bash
-# jailed-python: convenience shim for `jailed python3 "$@"`.
-# Kept for direct human use and existing tool integrations. The generic
-# `jailed` binary does all the sandboxing work.
-exec "$(dirname "$0")/jailed" python3 "$@"
-JP_EOF
-JAILED_PYTHON_SCRIPT+=$'\n'
 
 read -r -d '' JAILED_HOOK_SCRIPT <<'JP_EOF' || true
 #!/usr/bin/env bash
@@ -145,10 +136,6 @@ def sub(m):
     preceding = cmd[:start].rstrip()
     if preceding.endswith('jailed'):
         return m.group(0)
-    # (Note: `jailed-python -c …` is already pass-through without this
-    # dodge — `python` in `jailed-python` is preceded by `-`, which is
-    # not in the shell-token boundary char class, so the match never
-    # fires at that position.)
     return f'{m.group(1)}{m.group(2)}jailed {m.group(3)}'
 out = re.sub(pattern, sub, cmd)
 sys.stdout.write(out)
@@ -278,13 +265,11 @@ install_bins() {
   local prefix="${PREFIX:-/usr/local}"
   local bindir="$prefix/bin"
   local jailed_target="$bindir/jailed"
-  local target="$bindir/jailed-python"
-  local link="$bindir/jailed-python3"
 
   _maybe_sudo "$bindir" mkdir -p "$bindir"
 
   # Clean up binaries from prior renames so upgraders don't end up with
-  # orphaned safe-python alongside the new jailed-python.
+  # orphaned wrappers alongside the current `jailed`.
   for legacy in safe-python safe-python3; do
     if [[ -e "$bindir/$legacy" || -L "$bindir/$legacy" ]]; then
       _maybe_sudo "$bindir/$legacy" rm -f "$bindir/$legacy"
@@ -292,20 +277,10 @@ install_bins() {
     fi
   done
 
-  # Install the generic jailed wrapper first (jailed-python shims to it).
   printf '%s\n' "$JAILED_SCRIPT" | _maybe_sudo "$jailed_target" tee "$jailed_target" >/dev/null
   _maybe_sudo "$jailed_target" chmod 755 "$jailed_target"
 
-  printf '%s\n' "$JAILED_PYTHON_SCRIPT" | _maybe_sudo "$target" tee "$target" >/dev/null
-  _maybe_sudo "$target" chmod 755 "$target"
-
-  # jailed-python3 -> jailed-python (replace existing symlink or file).
-  _maybe_sudo "$link" rm -f "$link"
-  _maybe_sudo "$link" ln -s jailed-python "$link"
-
   echo "Installed: $jailed_target"
-  echo "Installed: $target"
-  echo "Installed: $link -> jailed-python"
 }
 
 install_hook() {
@@ -379,7 +354,7 @@ merge_settings() {
   patch=$(cat <<'JSON'
 {
   "permissions": {
-    "allow": ["Bash(jailed:*)", "Bash(jailed-python:*)", "Bash(jailed-python3:*)"]
+    "allow": ["Bash(jailed:*)"]
   },
   "hooks": {
     "PreToolUse": [{
@@ -469,8 +444,8 @@ usage() {
   cat <<EOF
 Usage: bash install.sh [--uninstall] [--help]
 
-Installs jailed + jailed-python + jailed-python3 wrappers and configures
-Claude Code to transparently route listed commands through the sandbox.
+Installs the jailed wrapper and configures Claude Code to transparently
+route listed commands through the sandbox.
 
 Options:
   --uninstall   Remove installed files and revert Claude Code config.

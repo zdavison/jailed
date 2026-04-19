@@ -67,6 +67,6 @@ summary() {
 
 make_tmp() {
   local dir
-  dir=$(mktemp -d -t jailed-python-test.XXXXXX)
+  dir=$(mktemp -d -t jailed-test.XXXXXX)
   echo "$dir"
 }

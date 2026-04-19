@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# jailed-python: convenience shim for `jailed python3 "$@"`.
-# Kept for direct human use and existing tool integrations. The generic
-# `jailed` binary does all the sandboxing work.
-exec "$(dirname "$0")/jailed" python3 "$@"

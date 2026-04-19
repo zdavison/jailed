@@ -64,10 +64,6 @@ test_case "silent when python3 is already jailed"
 out=$(run_hook "jailed python3 -c 'print(1)'")
 assert_eq "" "$out" "do not double-jail"
 
-test_case "silent when invocation uses jailed-python shim"
-out=$(run_hook "jailed-python -c 'print(1)'")
-assert_eq "" "$out" "shim already sandboxed; do not double-wrap"
-
 test_case "silent on version-suffixed binaries (python3.11)"
 out=$(run_hook "python3.11 -c 'print(1)'")
 assert_eq "" "$out" "out of scope: version-suffixed binaries"

@@ -61,10 +61,6 @@ def sub(m):
     preceding = cmd[:start].rstrip()
     if preceding.endswith('jailed'):
         return m.group(0)
-    # (Note: `jailed-python -c …` is already pass-through without this
-    # dodge — `python` in `jailed-python` is preceded by `-`, which is
-    # not in the shell-token boundary char class, so the match never
-    # fires at that position.)
     return f'{m.group(1)}{m.group(2)}jailed {m.group(3)}'
 out = re.sub(pattern, sub, cmd)
 sys.stdout.write(out)
