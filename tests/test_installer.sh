@@ -16,11 +16,6 @@ embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$JA
 actual=$(cat bin/jailed)
 assert_eq "$actual" "$embedded" "embedded jailed diverged from bin/jailed"
 
-test_case "embedded UNJAILED_SCRIPT matches bin/unjailed"
-embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$UNJAILED_SCRIPT"')
-actual=$(cat bin/unjailed)
-assert_eq "$actual" "$embedded" "embedded unjailed diverged from bin/unjailed"
-
 test_case "embedded JAILED_HOOK_SCRIPT matches hooks/jailed-hook.sh"
 embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$JAILED_HOOK_SCRIPT"')
 actual=$(cat hooks/jailed-hook.sh)
@@ -61,8 +56,6 @@ tmp=$(make_tmp)
 JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
 [[ -x "$tmp/bin/jailed" ]] && assert_eq "ok" "ok" "jailed installed and executable" \
   || assert_eq "ok" "missing" "jailed not executable or missing"
-[[ -x "$tmp/bin/unjailed" ]] && assert_eq "ok" "ok" "unjailed installed and executable" \
-  || assert_eq "ok" "missing" "unjailed not executable or missing"
 
 test_case "installed jailed actually runs"
 # install_bins places binaries; SRT settings are a separate step, so pass
@@ -87,8 +80,16 @@ JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
   || assert_eq "ok" "present" "legacy safe-python3 not cleaned up"
 [[ -x "$tmp/bin/jailed" ]]  && assert_eq "ok" "ok" "jailed still in place" \
   || assert_eq "ok" "missing" "jailed missing after legacy cleanup"
-[[ -x "$tmp/bin/unjailed" ]] && assert_eq "ok" "ok" "unjailed still in place" \
-  || assert_eq "ok" "missing" "unjailed missing after legacy cleanup"
+
+test_case "install_bins removes legacy unjailed binary on upgrade"
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\necho legacy\n' > "$tmp/bin/unjailed"
+chmod 755 "$tmp/bin/unjailed"
+JAILED_PYTHON_LIB_ONLY=1 bash -c "source install.sh; PREFIX='$tmp' install_bins"
+[[ ! -e "$tmp/bin/unjailed" ]] && assert_eq "ok" "ok" "legacy unjailed removed" \
+  || assert_eq "ok" "present" "legacy unjailed not cleaned up"
+[[ -x "$tmp/bin/jailed" ]] && assert_eq "ok" "ok" "jailed still in place" \
+  || assert_eq "ok" "missing" "jailed missing after legacy cleanup"
 
 rm -rf "$tmp"
 
@@ -101,10 +102,29 @@ hook_path="$tmp_home/.claude/hooks/jailed-hook.sh"
 [[ -x "$hook_path" ]] && assert_eq "ok" "ok" "new hook installed and executable" \
   || assert_eq "ok" "missing" "new hook missing or not executable"
 
-test_case "installed hook rewrites python3 into jailed python3"
-out=$(printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' | "$hook_path")
+test_case "installed hook rewrites python3 into jailed python3 (under staged ancestry)"
+# The installed hook activates only when process ancestry shows it's running
+# under `jailed claude`. Stage that via a fake `ps` first on PATH.
+stub_dir=$(make_tmp)
+cat > "$stub_dir/ps" <<'PS_EOF'
+#!/usr/bin/env bash
+pid=""
+while (( $# )); do
+  case "$1" in
+    -p) pid="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+case "$pid" in
+  9999) echo "1 jailed" ;;
+  *)    echo "9999 claude" ;;
+esac
+PS_EOF
+chmod 755 "$stub_dir/ps"
+out=$(printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' | PATH="$stub_dir:$PATH" "$hook_path")
 assert_contains "$out" '"permissionDecision": "allow"' "hook allows with rewrite"
 assert_contains "$out" "jailed python3 -c 1" "command wrapped with jailed"
+rm -rf "$stub_dir"
 
 test_case "install_hook removes legacy python-nudge.sh on upgrade"
 # Seed a legacy hook from a prior generation.
