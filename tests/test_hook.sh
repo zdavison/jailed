@@ -14,13 +14,33 @@ python
 jq
 EOF
 
+STAGED_PS_DIR=$(make_tmp)
+cat > "$STAGED_PS_DIR/ps" <<'PS_EOF'
+#!/usr/bin/env bash
+# Fake ps: always report the caller's pid as claude-under-jailed so the
+# hook activates. This isolates test_hook.sh to rewriter behavior.
+pid=""
+while (( $# )); do
+  case "$1" in
+    -p) pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+# Synthetic chain: pid=claude, ppid=9999=jailed, pppid=1.
+case "$pid" in
+  9999) echo "1 jailed" ;;
+  *)    echo "9999 claude" ;;
+esac
+PS_EOF
+chmod 755 "$STAGED_PS_DIR/ps"
+
 run_hook() {
   local cmd="$1"
   # JAILED_CONFIG goes on the consuming side of the pipe so it's visible
   # to the hook — a bare `JAILED_CONFIG=… printf | bash hook` would only
   # scope the env var to printf and the hook would fall back to defaults.
   printf '%s' "{\"tool_input\":{\"command\":$(jq -Rn --arg c "$cmd" '$c')}}" \
-    | JAILED_CONFIG="$CFG" bash "$HOOK"
+    | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG="$CFG" bash "$HOOK"
 }
 
 # ---- Rewrite happy paths ----
@@ -76,18 +96,18 @@ assert_eq "" "$out" "must respect word boundary, not substring"
 
 test_case "falls back to built-in defaults when no config file is set"
 out=$(printf '%s' \
-  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" | JAILED_CONFIG=/nonexistent/path bash "$HOOK")
+  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG=/nonexistent/path bash "$HOOK")
 assert_contains "$out" "jailed python3 -c 1" "built-in defaults still catch python3"
 
 test_case "user can narrow the list by editing the config"
 narrow_cfg="$CFG_DIR/narrow"
 printf 'jq\n' > "$narrow_cfg"
 out=$(printf '%s' \
-  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" | JAILED_CONFIG="$narrow_cfg" bash "$HOOK")
+  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG="$narrow_cfg" bash "$HOOK")
 assert_eq "" "$out" "python3 no longer rewritten when removed from config"
 
 out=$(printf '%s' \
-  "{\"tool_input\":{\"command\":\"cat | jq .\"}}" | JAILED_CONFIG="$narrow_cfg" bash "$HOOK")
+  "{\"tool_input\":{\"command\":\"cat | jq .\"}}" | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG="$narrow_cfg" bash "$HOOK")
 assert_contains "$out" "cat | jailed jq ." "jq still rewritten (still in config)"
 
 test_case "additionalContext is included so Claude sees why"
@@ -95,5 +115,5 @@ out=$(run_hook "python3 -c 'print(1)'")
 assert_contains "$out" '"additionalContext"' "must include additionalContext"
 assert_contains "$out" "jailed" "additionalContext mentions jailed"
 
-rm -rf "$CFG_DIR"
+rm -rf "$CFG_DIR" "$STAGED_PS_DIR"
 summary
