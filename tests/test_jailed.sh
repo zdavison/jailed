@@ -5,6 +5,27 @@ source tests/lib.sh
 
 WRAPPER="bin/jailed"
 
+test_case "jailed claude: skips SRT and execs claude directly"
+# Stub both `claude` (to print a success sentinel) and `srt` (to print a
+# sentinel we'd rather NOT see). If the special-case fires, `claude` runs
+# and `srt` is never invoked. If it doesn't fire, `srt` gets called and
+# its sentinel appears.
+stub_dir=$(make_tmp)
+cat > "$stub_dir/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "CLAUDE_RAN argv=$*"
+STUB
+chmod 755 "$stub_dir/claude"
+cat > "$stub_dir/srt" <<'STUB'
+#!/usr/bin/env bash
+echo "SRT_INVOKED args=$*"
+STUB
+chmod 755 "$stub_dir/srt"
+out=$(PATH="$stub_dir:$PATH" JAILED_SRT_SETTINGS=/dev/null bash bin/jailed claude --foo bar 2>&1)
+assert_contains "$out" "CLAUDE_RAN argv=--foo bar" "jailed claude execs claude directly"
+assert_not_contains "$out" "SRT_INVOKED" "srt must not be invoked for the claude target"
+rm -rf "$stub_dir"
+
 test_case "jailed passes stdin to the target command and prints stdout"
 result=$(echo "hello" | bash "$WRAPPER" python3 -c 'import sys; print(sys.stdin.read().strip().upper())')
 assert_eq "HELLO" "$result" "uppercase of stdin via jailed python3"

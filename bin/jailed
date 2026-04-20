@@ -18,6 +18,14 @@ if (( $# == 0 )); then
   exit 2
 fi
 
+# Special case: `jailed claude` does not wrap claude in SRT (claude needs
+# network, writes, and subprocess). Instead, exec claude directly. The
+# PreToolUse hook reads process ancestry and activates rewriting when it
+# sees a `claude` whose parent is `jailed` — which this exec sets up.
+if [[ "$(basename -- "$1")" == "claude" ]]; then
+  exec "$@"
+fi
+
 # Settings resolution, in priority order:
 #   1. $JAILED_SRT_SETTINGS (tests and one-off overrides)
 #   2. Sibling config/ of this script (dev mode: repo checkout)
