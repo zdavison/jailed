@@ -25,6 +25,9 @@ SRT abstracts the platform sandbox primitive — `bubblewrap` on Linux,
 `sandbox-exec` on macOS — so the same `jailed <cmd>` contract holds on
 both OSes.
 
+> [!WARNING]  
+> This is not a hard security boundary. The agent can bypass it, so you shouldn't use this as part of any legitimate security posture. It is only intended to allow you to grant permanent permissions for jailed binaries for local workflows like the `pup` example below.
+
 ## Why?
 
 I originally wrote Claude to support an unattended workflow for [pup](https://github.com/datadog-labs/pup).
