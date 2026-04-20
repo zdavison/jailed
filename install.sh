@@ -40,6 +40,14 @@ if (( $# == 0 )); then
   exit 2
 fi
 
+# Special case: `jailed claude` does not wrap claude in SRT (claude needs
+# network, writes, and subprocess). Instead, exec claude directly. The
+# PreToolUse hook reads process ancestry and activates rewriting when it
+# sees a `claude` whose parent is `jailed` — which this exec sets up.
+if [[ "$(basename -- "$1")" == "claude" ]]; then
+  exec "$@"
+fi
+
 # Settings resolution, in priority order:
 #   1. $JAILED_SRT_SETTINGS (tests and one-off overrides)
 #   2. Sibling config/ of this script (dev mode: repo checkout)
@@ -72,33 +80,6 @@ exec srt -s "$settings" -c "$escaped"
 JP_EOF
 JAILED_SCRIPT+=$'\n'
 
-read -r -d '' UNJAILED_SCRIPT <<'JP_EOF' || true
-#!/usr/bin/env bash
-# unjailed: run a command with UNJAILED=1 in its env.
-# The jailed-hook's default behavior is to rewrite listed commands to run
-# through the `jailed` sandbox. When Claude Code is launched as
-# `unjailed claude`, the hook sees UNJAILED=1 in its inherited env and,
-# after validating via a process-ancestry check that the value was set by
-# this wrapper (and not spoofed by a jailed Claude), stands down — so the
-# user gets normal permission prompts and unsandboxed execution.
-#
-# For any non-`claude` target this wrapper is a harmless no-op: nothing
-# else on the system reads UNJAILED.
-#
-# Trust model: see docs/superpowers/specs/2026-04-19-unjailed-command-design.md.
-
-set -u
-
-if (( $# == 0 )); then
-  echo "usage: unjailed <cmd> [args...]" >&2
-  exit 2
-fi
-
-export UNJAILED=1
-exec "$@"
-JP_EOF
-UNJAILED_SCRIPT+=$'\n'
-
 read -r -d '' JAILED_HOOK_SCRIPT <<'JP_EOF' || true
 #!/usr/bin/env bash
 # PreToolUse hook: transparently wrap commands in `jailed` before Bash runs them.
@@ -124,66 +105,39 @@ cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
 
 [[ -z "$cmd" ]] && exit 0
 
-# --- Trust check for UNJAILED ---
-# If UNJAILED=1 is set AND process ancestry shows this hook was launched by
-# a `claude` whose topmost-claude-ancestor's parent is `unjailed`, stand
-# down (no rewrite → normal permission prompts). Anything else — including
-# a jailed Claude spawning `UNJAILED=1 claude -p ...` to forge the env var
-# — fails the check and we continue with the usual rewrite.
-#
-# Ancestry lookup: real `ps` by default; fixture file for tests.
-if [[ "${UNJAILED:-}" == "1" ]]; then
-  start_pid="${JAILED_ANCESTRY_START:-$$}"
-  python3 - "$start_pid" <<'PY'
+# --- Ancestry-driven activation ---
+# The hook rewrites listed commands ONLY when process ancestry shows that
+# this hook is running inside a `claude` whose parent is `jailed`. That
+# condition is set exclusively by `jailed claude` (see bin/jailed). There
+# is no env-var signal: a jailed Claude spawning `FOO=bar claude -p ...`
+# cannot change the activation decision from inside a tool call.
+python3 - "$$" <<'PY'
 import os, sys, subprocess
 
-fixture = os.environ.get('JAILED_ANCESTRY_FIXTURE') or ''
-
-def lookup_ps(pid):
+def lookup(pid):
     try:
         out = subprocess.check_output(
             ['ps', '-o', 'ppid=,comm=', '-p', str(pid)],
             stderr=subprocess.DEVNULL,
-        ).decode()
+        ).decode().strip()
     except Exception:
         return None
-    out = out.strip()
     if not out:
         return None
     parts = out.split(None, 1)
     if len(parts) < 2:
         return None
     ppid, comm = parts
-    # On Linux, `comm` can include a leading path or brackets; basename
-    # is good enough for our targets ("claude", "unjailed"). macOS BSD
-    # `ps` prints just the basename already. Linux truncates `comm` to
-    # 15 chars — "claude" (6) and "unjailed" (8) are both well under that
-    # limit; any future target name must stay <= 15 chars too.
+    # Linux may prefix with a path or bracket kernel threads; basename
+    # normalizes. BSD ps returns just the basename already. Linux truncates
+    # `comm` to 15 chars — "claude" (6) and "jailed" (6) both fit.
     comm = os.path.basename(comm.strip())
     try:
         return int(ppid), comm
     except ValueError:
         return None
 
-def lookup_fixture(pid):
-    try:
-        with open(fixture) as f:
-            for line in f:
-                parts = line.strip().split(None, 2)
-                if len(parts) < 3:
-                    continue
-                p, pp, c = parts
-                if int(p) == pid:
-                    return int(pp), c
-    except Exception:
-        return None
-    return None
-
-def lookup(pid):
-    return lookup_fixture(pid) if fixture else lookup_ps(pid)
-
 def topmost_claude_parent_comm(start):
-    # Build chain of (pid, comm) from start upward.
     chain = []
     pid = start
     seen = set()
@@ -197,32 +151,26 @@ def topmost_claude_parent_comm(start):
         if ppid == 0 or ppid == pid:
             break
         pid = ppid
-    # Topmost (highest-index) claude in the chain.
     topmost = -1
     for i, (_, c) in enumerate(chain):
         if c == 'claude':
             topmost = i
     if topmost < 0:
         return None
-    # Parent's comm is the next entry upward. If the chain ended right at
-    # the topmost claude, the parent is unreachable (pid<=1, cycle, or a
-    # dead process) — all of which mean it cannot be `unjailed`. Distrust.
     if topmost + 1 >= len(chain):
         return None
     return chain[topmost + 1][1]
 
 start = int(sys.argv[1])
 parent = topmost_claude_parent_comm(start)
-sys.exit(0 if parent == 'unjailed' else 1)
+# Exit 0 means "activate" (rewriter runs); non-zero means "stand down".
+sys.exit(0 if parent == 'jailed' else 1)
 PY
-  if [[ $? -eq 0 ]]; then
-    # Trusted unjailed session — stand down, let the Bash call go through
-    # the normal permission flow.
-    exit 0
-  fi
-  # Untrusted UNJAILED (spoofed / attack) — fall through to the rewrite.
+if [[ $? -ne 0 ]]; then
+  # Not inside a `jailed claude` session — do nothing.
+  exit 0
 fi
-# --- end trust check ---
+# --- end activation check ---
 
 cfg="${JAILED_CONFIG:-$HOME/.config/jailed/commands}"
 targets=()
@@ -277,7 +225,7 @@ if [[ "$rewritten" != "$cmd" ]]; then
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
       updatedInput: { command: $new },
-      additionalContext: "Commands listed in ~/.config/jailed/commands are automatically routed through `jailed` — a sandboxed wrapper with no network and no filesystem writes. Your tool call was rewritten transparently; if you genuinely need network/writes/subprocess, invoke python3 (etc.) via a form the hook will not match (for example, prefix with env VAR=value)."
+      additionalContext: "Commands listed in ~/.config/jailed/commands are automatically routed through `jailed` — a sandboxed wrapper with no network and no filesystem writes. Your tool call was rewritten transparently. This session is running under `jailed claude`; plain `claude` runs without jailing."
     }
   }'
 fi
@@ -397,7 +345,7 @@ install_bins() {
 
   # Clean up binaries from prior renames so upgraders don't end up with
   # orphaned wrappers alongside the current `jailed`.
-  for legacy in safe-python safe-python3; do
+  for legacy in safe-python safe-python3 unjailed; do
     if [[ -e "$bindir/$legacy" || -L "$bindir/$legacy" ]]; then
       _maybe_sudo "$bindir/$legacy" rm -f "$bindir/$legacy"
       echo "Removed legacy: $bindir/$legacy"
@@ -408,11 +356,6 @@ install_bins() {
   _maybe_sudo "$jailed_target" chmod 755 "$jailed_target"
 
   echo "Installed: $jailed_target"
-
-  local unjailed_target="$bindir/unjailed"
-  printf '%s\n' "$UNJAILED_SCRIPT" | _maybe_sudo "$unjailed_target" tee "$unjailed_target" >/dev/null
-  _maybe_sudo "$unjailed_target" chmod 755 "$unjailed_target"
-  echo "Installed: $unjailed_target"
 }
 
 install_hook() {
@@ -555,7 +498,6 @@ run_install() {
   local cfg="$HOME/.config/jailed/commands"
   echo
   echo "jailed installed."
-  echo "unjailed installed."
   echo
   echo "Claude's calls to these commands will be transparently sandboxed:"
   # Indent each live entry for readability. grep -v strips comments/blanks.
@@ -570,8 +512,10 @@ run_install() {
   echo "Quick test:"
   echo "  echo '<a href=x>' | jailed python3 -c 'import sys; print(sys.stdin.read())'"
   echo
-  echo "Need Claude to run un-sandboxed for a session (network, writes)?"
-  echo "  unjailed claude"
+  echo "Jailing is opt-in. To launch Claude in a jailed session:"
+  echo "  jailed claude"
+  echo
+  echo "Plain 'claude' runs without the hook rewriting anything."
   echo
   echo "Restart Claude Code (or run /config) to pick up the new hook and permissions."
 }
