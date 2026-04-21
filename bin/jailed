@@ -13,17 +13,32 @@
 
 set -u
 
+# Identity reexec: the hook's activation check looks for a process with
+# comm="jailed" in claude's ancestry. `ps -o comm=` is argv[0]-derived on
+# macOS and binary-derived on Linux, so shebang invocation alone gives us
+# comm="bash" on both. Fix: reexec ourselves with argv[0]="jailed" (covers
+# macOS) and on Linux also write /proc/self/comm (covers kernel-set comm).
+# Guard with an env flag to avoid recursing.
+if [[ "${_JAILED_IDENTITY:-0}" != "1" ]]; then
+  export _JAILED_IDENTITY=1
+  exec -a jailed "$BASH" "$0" "$@"
+fi
+unset _JAILED_IDENTITY
+[[ -w /proc/self/comm ]] && echo jailed > /proc/self/comm 2>/dev/null
+
 if (( $# == 0 )); then
   echo "usage: jailed <cmd> [args...]" >&2
   exit 2
 fi
 
 # Special case: `jailed claude` does not wrap claude in SRT (claude needs
-# network, writes, and subprocess). Instead, exec claude directly. The
-# PreToolUse hook reads process ancestry and activates rewriting when it
-# sees a `claude` whose parent is `jailed` — which this exec sets up.
+# network, writes, and subprocess). Run claude synchronously — do NOT exec —
+# so this process stays alive as claude's parent. The PreToolUse hook walks
+# process ancestry and activates rewriting when it sees a `claude` whose
+# parent comm is `jailed`, which the identity reexec above arranges.
 if [[ "$(basename -- "$1")" == "claude" ]]; then
-  exec "$@"
+  "$@"
+  exit $?
 fi
 
 # Settings resolution, in priority order:

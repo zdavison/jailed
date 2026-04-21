@@ -5,6 +5,40 @@ source tests/lib.sh
 
 WRAPPER="bin/jailed"
 
+test_case "jailed claude: stub claude sees 'jailed' as a real ancestor"
+# Real invocation (no exec-a trickery): a claude stub walks its own process
+# ancestry via /bin/ps and records the basename of each comm. For the hook's
+# activation check to work in production, 'jailed' must appear in that chain.
+# Regression test for two issues the hook design requires:
+#   1. bin/jailed must not exec the claude target (exec destroys the parent).
+#   2. The jailed process must identify itself as comm="jailed" so ps sees it.
+anc_dir=$(make_tmp)
+out_file="$anc_dir/chain.txt"
+cat > "$anc_dir/claude" <<STUB
+#!/usr/bin/env bash
+pid=\$\$
+> "$out_file"
+while [[ -n "\$pid" && "\$pid" != "1" ]]; do
+  line=\$(ps -o ppid=,comm= -p "\$pid" 2>/dev/null) || break
+  [[ -z "\$line" ]] && break
+  ppid=\$(echo "\$line" | awk '{print \$1}')
+  comm=\$(echo "\$line" | awk '{print \$2}')
+  basename -- "\$comm" >> "$out_file"
+  pid=\$ppid
+done
+STUB
+chmod 755 "$anc_dir/claude"
+PATH="$anc_dir:$PATH" bash bin/jailed claude >/dev/null
+if grep -Fxq "jailed" "$out_file"; then
+  PASS_COUNT=$((PASS_COUNT+1))
+else
+  FAIL_COUNT=$((FAIL_COUNT+1))
+  _red "  FAIL"; echo " no 'jailed' comm found in claude's real ancestor chain"
+  echo "    chain:"
+  sed 's/^/      /' "$out_file"
+fi
+rm -rf "$anc_dir"
+
 test_case "jailed claude: skips SRT and execs claude directly"
 # Stub both `claude` (to print a success sentinel) and `srt` (to print a
 # sentinel we'd rather NOT see). If the special-case fires, `claude` runs
