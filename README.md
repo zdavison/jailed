@@ -54,7 +54,7 @@ automatically if `srt` isn't already on your PATH (needs Node.js + npm).
 - Writes `~/.claude/hooks/jailed-hook.sh` (the rewriting PreToolUse hook).
 - Writes `~/.config/jailed/commands` **only if absent** — the default list of commands to auto-jail. Your edits survive re-installs.
 - Writes `~/.config/jailed/srt-settings.json` **only if absent** — SRT's policy file (deny-all by default).
-- Merges into `~/.claude/settings.json`: `permissions.allow` gains `Bash(jailed:*)`, `Bash(jailed-python:*)`, `Bash(jailed-python3:*)`; `hooks.PreToolUse` gains a Bash-matcher hook that runs `jailed-hook.sh`.
+- Merges into `~/.claude/settings.json`: `permissions.allow` gains `Bash(jailed:*)`; `hooks.PreToolUse` gains a Bash-matcher hook that runs `jailed-hook.sh`. The hook stands down for plain `claude` sessions and only rewrites commands when launched via `jailed claude`.
 
 Original `settings.json` is backed up to `settings.json.bak` on first run. If you previously installed under the `safe-python` or `pupbox` names, upgrading removes all legacy binaries, allow rules, hook registrations, and policy-block markers automatically.
 
@@ -76,19 +76,15 @@ deny-all (empty `allowWrite`, empty `allowedDomains`). See the
 [SRT docs](https://github.com/anthropic-experimental/sandbox-runtime#configuration)
 if you want to allow specific domains or write paths.
 
-## Escape hatch: `unjailed`
+## Enable jailing: `jailed claude`
 
-Sometimes you actually *want* `claude` to hit the network or write to disk — e.g. a debugging session where you'll explicitly approve each step. Launch Claude as:
+Jailing is opt-in. Run Claude normally with `claude` and nothing in its tool calls is rewritten. Run Claude under `jailed` to have the hook auto-route listed commands through the sandbox:
 
-```bash
-unjailed claude
-```
+    jailed claude
 
-For that session the hook stands down: your listed commands run un-sandboxed, and you get the normal Claude Code permission prompts. Any Claude spawned from within (via the Bash tool) inherits the un-jailed state.
+Under the hood, `jailed claude` `exec`s `claude` directly (no SRT wrap — Claude itself needs network and writes). The PreToolUse hook then walks the process tree and sees a `claude` whose parent is `jailed`, which is how it decides to activate.
 
-Safety: a jailed Claude can't opt itself out. The hook verifies that `UNJAILED=1` came from a legitimate `unjailed` wrapper above the outermost `claude` process — so `UNJAILED=1 claude -p …` from inside a running Claude fails the check and gets rewritten as usual.
-
-`unjailed` is a no-op for anything that isn't Claude: `unjailed python3 foo.py` just runs `python3 foo.py` with an extra env var nothing else reads.
+Safety: there is no env-var signal the hook trusts, so a Claude session cannot enable or disable jailing from within a tool call. A jailed Claude that spawns an inner `claude -p …` still runs inside the same `jailed` ancestry — the inner hook walks up, finds a `claude` with a `jailed` parent, and activates.
 
 ## Uninstall
 
@@ -114,3 +110,5 @@ Removes binaries, hook, and allow rules / hook registration from `settings.json`
 ## Known issues
 
 **Rewrite limitations:** the hook uses regex at shell-token boundaries. It does *not* rewrite `env FOO=bar python3 …` (command is not at a boundary) or occurrences embedded in single-quoted strings that themselves contain shell separators (e.g. `echo ';python3'`). Both edge cases are rare in Claude's typical usage; workaround is to invoke `jailed <cmd>` directly, or remove the command from `~/.config/jailed/commands`.
+
+**Activation signal:** The hook activates only for processes whose ancestry reaches a `claude` launched by `jailed`. If you daemonize a subprocess such that it loses that ancestry (e.g. `setsid … &`, process reparenting to init), the hook will not activate in that detached subtree. Acceptable for the intended threat model (non-adversarial misconfiguration); not a hard boundary.
