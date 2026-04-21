@@ -94,10 +94,12 @@ assert_eq "" "$out" "must respect word boundary, not substring"
 
 # ---- Config semantics ----
 
-test_case "falls back to built-in defaults when no config file is set"
-out=$(printf '%s' \
-  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG=/nonexistent/path bash "$HOOK")
-assert_contains "$out" "jailed python3 -c 1" "built-in defaults still catch python3"
+test_case "missing config file: warn on stderr and stand down"
+combined=$(printf '%s' \
+  "{\"tool_input\":{\"command\":\"python3 -c 1\"}}" \
+  | PATH="$STAGED_PS_DIR:$PATH" JAILED_CONFIG=/nonexistent/path bash "$HOOK" 2>&1)
+assert_contains "$combined" "no commands list at /nonexistent/path" "warning is printed when no config"
+assert_not_contains "$combined" "jailed python3" "no rewrite without a config file"
 
 test_case "user can narrow the list by editing the config"
 narrow_cfg="$CFG_DIR/narrow"

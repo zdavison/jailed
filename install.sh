@@ -171,16 +171,17 @@ fi
 # --- end activation check ---
 
 cfg="${JAILED_CONFIG:-$HOME/.config/jailed/commands}"
-targets=()
-if [[ -f "$cfg" ]]; then
-  # bash 3.2-compatible (no mapfile): read lines into the array, dropping
-  # blanks and # comments.
-  while IFS= read -r line; do
-    targets+=("$line")
-  done < <(grep -vE '^[[:space:]]*(#|$)' "$cfg")
-else
-  targets=(python3 python jq awk sed grep)
+if [[ ! -f "$cfg" ]]; then
+  echo "jailed-hook: no commands list at $cfg — nothing will be jailed. Run 'bash install.sh' or create the file." >&2
+  exit 0
 fi
+
+targets=()
+# bash 3.2-compatible (no mapfile): read lines into the array, dropping
+# blanks and # comments.
+while IFS= read -r line; do
+  targets+=("$line")
+done < <(grep -vE '^[[:space:]]*(#|$)' "$cfg")
 
 # Nothing to do if the list is empty.
 (( ${#targets[@]} == 0 )) && exit 0
