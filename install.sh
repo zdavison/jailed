@@ -107,10 +107,14 @@ cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
 
 # --- Ancestry-driven activation ---
 # The hook rewrites listed commands ONLY when process ancestry shows that
-# this hook is running inside a `claude` whose parent is `jailed`. That
-# condition is set exclusively by `jailed claude` (see bin/jailed). There
-# is no env-var signal: a jailed Claude spawning `FOO=bar claude -p ...`
-# cannot change the activation decision from inside a tool call.
+# some `claude` in the chain was launched by `jailed`. That condition is
+# set exclusively by `jailed claude` (see bin/jailed). There is no env-var
+# signal: a jailed Claude spawning `FOO=bar claude -p ...` cannot change
+# the activation decision from inside a tool call. We match any claude→
+# jailed pair in the chain (not just the topmost claude) so that nested
+# scenarios — e.g. running `jailed claude` inside an existing claude
+# session — activate correctly. Attackers can only ADD chain entries
+# via exec-a tricks, not remove real ones, so broader matching is safe.
 python3 - "$$" <<'PY'
 import os, sys, subprocess
 
@@ -137,7 +141,7 @@ def lookup(pid):
     except ValueError:
         return None
 
-def topmost_claude_parent_comm(start):
+def any_claude_parent_is_jailed(start):
     chain = []
     pid = start
     seen = set()
@@ -151,20 +155,14 @@ def topmost_claude_parent_comm(start):
         if ppid == 0 or ppid == pid:
             break
         pid = ppid
-    topmost = -1
-    for i, (_, c) in enumerate(chain):
-        if c == 'claude':
-            topmost = i
-    if topmost < 0:
-        return None
-    if topmost + 1 >= len(chain):
-        return None
-    return chain[topmost + 1][1]
+    for i in range(len(chain) - 1):
+        if chain[i][1] == 'claude' and chain[i + 1][1] == 'jailed':
+            return True
+    return False
 
 start = int(sys.argv[1])
-parent = topmost_claude_parent_comm(start)
 # Exit 0 means "activate" (rewriter runs); non-zero means "stand down".
-sys.exit(0 if parent == 'jailed' else 1)
+sys.exit(0 if any_claude_parent_is_jailed(start) else 1)
 PY
 if [[ $? -ne 0 ]]; then
   # Not inside a `jailed claude` session — do nothing.

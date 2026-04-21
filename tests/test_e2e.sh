@@ -20,13 +20,30 @@ print(m.group(1) if m else "none")
 ')
 assert_eq "hello" "$out" "end-to-end: jailed python3 pipeline works"
 
-test_case "installed hook rewrites python3 tool-input to jailed python3"
+test_case "installed hook rewrites python3 tool-input to jailed python3 (under staged ancestry)"
 hook="$tmp_home/.claude/hooks/jailed-hook.sh"
+stub_dir=$(make_tmp)
+cat > "$stub_dir/ps" <<'PS_EOF'
+#!/usr/bin/env bash
+pid=""
+while (( $# )); do
+  case "$1" in
+    -p) pid="$2"; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+case "$pid" in
+  9999) echo "1 jailed" ;;
+  *)    echo "9999 claude" ;;
+esac
+PS_EOF
+chmod 755 "$stub_dir/ps"
 out=$(printf '%s' '{"tool_input":{"command":"python3 -c \"print(1)\""}}' \
-  | JAILED_CONFIG="$tmp_home/.config/jailed/commands" bash "$hook")
+  | PATH="$stub_dir:$PATH" JAILED_CONFIG="$tmp_home/.config/jailed/commands" bash "$hook")
 assert_contains "$out" '"permissionDecision": "allow"' "hook allows with rewrite"
 assert_contains "$out" '"updatedInput"' "updatedInput field present"
 assert_contains "$out" 'jailed python3 -c' "command wrapped with jailed"
+rm -rf "$stub_dir"
 
 test_case "installed hook stays silent on an already-jailed command"
 out=$(printf '%s' '{"tool_input":{"command":"jailed python3 -c \"print(1)\""}}' \
