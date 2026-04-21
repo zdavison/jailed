@@ -26,7 +26,7 @@ SRT abstracts the platform sandbox primitive — `bubblewrap` on Linux,
 both OSes.
 
 > [!WARNING]  
-> This is not a hard security boundary. The agent can bypass it, so you shouldn't use this as part of any legitimate security posture. It is only intended to allow you to grant permanent permissions for jailed binaries for local workflows like the `pup` example below.
+> This is not a hard security boundary. The agent can bypass it if it really tries to, so you shouldn't use this as part of any legitimate security posture. It is only intended to allow you to grant permanent permissions for jailed binaries for local workflows like the `pup` example below.
 
 ## Why?
 
@@ -84,13 +84,13 @@ Jailing is opt-in. Run Claude normally with `claude` and nothing in its tool cal
 
 Under the hood, `jailed claude` `exec`s `claude` directly (no SRT wrap — Claude itself needs network and writes). The PreToolUse hook then walks the process tree and sees a `claude` whose parent is `jailed`, which is how it decides to activate.
 
-Safety: there is no env-var signal the hook trusts, so a Claude session cannot enable or disable jailing from within a tool call. A jailed Claude that spawns an inner `claude -p …` still runs inside the same `jailed` ancestry — the inner hook walks up, finds a `claude` with a `jailed` parent, and activates.
+Safety: there is no env-var signal the hook trusts, so a Claude session cannot enable or disable jailing from within a tool call. A jailed Claude that spawns an inner `claude -p …` still runs inside the same `jailed` ancestry, the inner hook walks up, finds a `claude` with a `jailed` parent, and activates.
 
 ## Uninstall
 
     bash install.sh --uninstall
 
-Removes binaries, hook, and allow rules / hook registration from `settings.json` (current + all legacy generations). Leaves `~/.config/jailed/` in place (it's user data). SRT itself (the npm package) is left alone.
+Removes binaries, hook, and allow rules / hook registration from `settings.json`. Leaves `~/.config/jailed/` in place (it's user data). SRT itself (the npm package) is left alone.
 
 ## Verify
 
@@ -109,6 +109,6 @@ Removes binaries, hook, and allow rules / hook registration from `settings.json`
 
 ## Known issues
 
-**Rewrite limitations:** the hook uses regex at shell-token boundaries. It does *not* rewrite `env FOO=bar python3 …` (command is not at a boundary) or occurrences embedded in single-quoted strings that themselves contain shell separators (e.g. `echo ';python3'`). Both edge cases are rare in Claude's typical usage; workaround is to invoke `jailed <cmd>` directly, or remove the command from `~/.config/jailed/commands`.
+**Rewrite limitations:** the hook uses regex at shell-token boundaries. It does *not* rewrite `env FOO=bar python3 …` (command is not at a boundary) or occurrences embedded in single-quoted strings that themselves contain shell separators (e.g. `echo ';python3'`).
 
-**Activation signal:** The hook activates only for processes whose ancestry reaches a `claude` launched by `jailed`. If you daemonize a subprocess such that it loses that ancestry (e.g. `setsid … &`, process reparenting to init), the hook will not activate in that detached subtree. Acceptable for the intended threat model (non-adversarial misconfiguration); not a hard boundary.
+**Activation signal:** The hook activates only for processes whose ancestry reaches a `claude` launched by `jailed`. If you daemonize a subprocess such that it loses that ancestry (e.g. `setsid … &`, process reparenting to init), the hook will not activate in that detached subtree.
