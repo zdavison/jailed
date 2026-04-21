@@ -47,15 +47,41 @@ assert_eq "1" "$allow_count" "no duplicate allow"
 hook_count=$(jq '.hooks.PreToolUse | length' "$tmp_home/.claude/settings.json")
 assert_eq "1" "$hook_count" "no duplicate hook registration"
 
-test_case "installed unjailed exports UNJAILED=1 to child env"
-out=$(env -u UNJAILED "$tmp_prefix/bin/unjailed" env | grep '^UNJAILED=' || true)
-assert_eq "UNJAILED=1" "$out" "installed unjailed must export UNJAILED=1"
+test_case "real-chain: jailed claude ancestry → hook activates"
+hook="$tmp_home/.claude/hooks/jailed-hook.sh"
+cfg="$tmp_home/.config/jailed/commands"
+runner=$(make_tmp)/runner.sh
+cat > "$runner" <<RUNNER_EOF
+#!/usr/bin/env bash
+printf '%s' '{"tool_input":{"command":"python3 -c 1"}}' \
+  | JAILED_CONFIG="$cfg" bash "$hook"
+RUNNER_EOF
+chmod 755 "$runner"
 
-test_case "installed unjailed with zero args exits 2 with usage"
-set +e
-out=$("$tmp_prefix/bin/unjailed" 2>&1); rc=$?
-set -e
-assert_contains "$out" "usage: unjailed" "usage text shown"
-assert_eq "2" "$rc" "exit code 2"
+# Process tree: jailed-bash → claude-bash → bash(runner) → hook.
+# `exec -a <name>` sets argv[0], which is what ps reports as comm.
+out=$(
+  ( exec -a jailed bash -c "( exec -a claude bash \"$runner\" )" )
+)
+assert_contains "$out" "jailed python3 -c 1" "ancestry jailed→claude activates hook"
+
+test_case "real-chain: plain claude ancestry → hook stands down"
+out=$(
+  ( exec -a claude bash "$runner" )
+)
+assert_eq "" "$out" "no jailed parent → hook silent"
+
+test_case "real-chain: nested claude under jailed claude → hook activates"
+# Inner claude spawned without any magic env var — just a chain:
+# jailed → claude → bash → claude → bash(runner) → hook.
+out=$(
+  ( exec -a jailed bash -c "
+      ( exec -a claude bash -c \"
+          ( exec -a claude bash \\\"$runner\\\" )
+        \" )
+    "
+  )
+)
+assert_contains "$out" "jailed python3 -c 1" "inner claude under jailed outer activates"
 
 summary
