@@ -279,6 +279,20 @@ awk
 sed
 JP_EOF
 
+read -r -d '' APPARMOR_BWRAP_PROFILE <<'JP_EOF' || true
+# jailed: apparmor-bwrap-profile
+# Narrow AppArmor profile allowing /usr/bin/bwrap to create unprivileged
+# user namespaces on kernels where
+# kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04+).
+# Scoped to bwrap only — every other binary stays restricted.
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap @BWRAP_PATH@ flags=(unconfined) {
+  userns,
+}
+JP_EOF
+APPARMOR_BWRAP_PROFILE+=$'\n'
+
 read -r -d '' SRT_SETTINGS <<'JP_EOF' || true
 {
   "filesystem": {
@@ -348,6 +362,86 @@ _maybe_sudo() {
   else
     sudo "$@"
   fi
+}
+
+_apparmor_profile_path() {
+  echo "${JAILED_APPARMOR_PROFILE_PATH:-/etc/apparmor.d/bwrap}"
+}
+
+_apparmor_userns_file() {
+  echo "${JAILED_APPARMOR_USERNS_FILE:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
+}
+
+# Write /etc/apparmor.d/bwrap so bwrap can create unprivileged user
+# namespaces on Ubuntu 24.04+ kernels. Without this, SRT's deny-network
+# mode fails with `bwrap: loopback: Failed RTM_NEWADDR: Operation not
+# permitted` — because AppArmor blocks bwrap from setting up `lo` inside
+# the new net namespace. The profile is scoped to bwrap only; other
+# binaries stay restricted. No-op on macOS, on older kernels, and when
+# the restriction isn't active. Leaves any pre-existing non-jailed
+# profile alone.
+ensure_bwrap_userns() {
+  [[ "$(uname 2>/dev/null)" == "Linux" ]] || return 0
+
+  local sysctl
+  sysctl=$(_apparmor_userns_file)
+  [[ -r "$sysctl" ]] || return 0
+  [[ "$(cat "$sysctl" 2>/dev/null)" == "1" ]] || return 0
+
+  local bwrap_path
+  bwrap_path=$(command -v bwrap 2>/dev/null || true)
+  if [[ -z "$bwrap_path" ]]; then
+    # No bwrap to profile. SRT will surface its own error later.
+    return 0
+  fi
+
+  local profile
+  profile=$(_apparmor_profile_path)
+
+  if [[ -f "$profile" ]] && ! grep -q 'jailed: apparmor-bwrap-profile' "$profile" 2>/dev/null; then
+    echo "AppArmor: $profile exists and wasn't written by jailed — leaving it alone."
+    return 0
+  fi
+
+  local rendered
+  rendered=$(printf '%s' "$APPARMOR_BWRAP_PROFILE" | sed "s|@BWRAP_PATH@|$bwrap_path|")
+
+  local tmp
+  tmp=$(mktemp)
+  printf '%s' "$rendered" > "$tmp"
+
+  if ! _maybe_sudo "$profile" install -m 0644 "$tmp" "$profile"; then
+    rm -f "$tmp"
+    echo "AppArmor: could not write $profile. bwrap may fail. Install manually:" >&2
+    echo "  sudo install -m 0644 <(…profile…) $profile && sudo apparmor_parser -r $profile" >&2
+    return 1
+  fi
+  rm -f "$tmp"
+
+  if [[ -z "${JAILED_APPARMOR_NO_RELOAD:-}" ]]; then
+    if command -v apparmor_parser >/dev/null 2>&1; then
+      if ! sudo apparmor_parser -r "$profile" 2>/dev/null; then
+        echo "AppArmor: wrote $profile but apparmor_parser -r failed. Reload manually: sudo apparmor_parser -r $profile" >&2
+        return 1
+      fi
+    fi
+  fi
+
+  echo "Installed AppArmor profile: $profile (allows bwrap userns; required on this kernel for bwrap to be able to block networking completely)"
+}
+
+remove_apparmor_profile() {
+  [[ "$(uname 2>/dev/null)" == "Linux" ]] || return 0
+  local profile
+  profile=$(_apparmor_profile_path)
+  [[ -f "$profile" ]] || return 0
+  grep -q 'jailed: apparmor-bwrap-profile' "$profile" 2>/dev/null || return 0
+
+  if [[ -z "${JAILED_APPARMOR_NO_RELOAD:-}" ]] && command -v apparmor_parser >/dev/null 2>&1; then
+    sudo apparmor_parser -R "$profile" 2>/dev/null || true
+  fi
+  _maybe_sudo "$profile" rm -f "$profile"
+  echo "Removed: $profile"
 }
 
 install_bins() {
@@ -502,6 +596,7 @@ PY
 
 run_install() {
   check_deps
+  ensure_bwrap_userns || true
   install_bins
   install_srt_settings
   install_config
@@ -592,6 +687,8 @@ run_uninstall() {
 
   strip_legacy_claude_md
   [[ -f "$HOME/.claude/CLAUDE.md" ]] && echo "Cleaned: $HOME/.claude/CLAUDE.md"
+
+  remove_apparmor_profile
 
   echo
   echo "jailed uninstalled. (Backup at $settings.bak remains if you want to restore.)"
