@@ -427,7 +427,7 @@ ensure_bwrap_userns() {
     fi
   fi
 
-  echo "Installed AppArmor profile: $profile (allows bwrap userns; required on this kernel)"
+  echo "Installed AppArmor profile: $profile (allows bwrap userns; required on this kernel for bwrap to be able to block networking completely)"
 }
 
 remove_apparmor_profile() {
