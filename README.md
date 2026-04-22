@@ -40,7 +40,11 @@ The general idea is that you won't be prompted for permissions for anything that
 
 ## Install
 
-    curl -fsSL https://raw.githubusercontent.com/zdavison/jailed/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/zdavison/jailed/main/install.sh | sudo bash
+
+> [!INFO]  
+> `sudo` is needed to install dependencies and to configure an AppArmor profile for `bwrap` on Linux.
+> Check the script yourself if you're uncomfortable.
 
 Requires `jq` and `python3`. The installer will `npm install -g @anthropic-ai/sandbox-runtime`
 automatically if `srt` isn't already on your PATH (needs Node.js + npm).
