@@ -31,6 +31,83 @@ embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$SR
 actual=$(cat config/srt-settings.json)
 assert_eq "$actual" "$embedded" "embedded SRT settings diverged from config/srt-settings.json"
 
+test_case "embedded APPARMOR_BWRAP_PROFILE matches config/apparmor-bwrap.profile"
+embedded=$(JAILED_PYTHON_LIB_ONLY=1 bash -c 'source install.sh; printf "%s" "$APPARMOR_BWRAP_PROFILE"')
+actual=$(cat config/apparmor-bwrap.profile)
+assert_eq "$actual" "$embedded" "embedded AppArmor profile diverged from config/apparmor-bwrap.profile"
+
+# ---- AppArmor bwrap userns handling ----
+# Guarded on Linux — macOS doesn't have this codepath.
+if [[ "$(uname)" == "Linux" ]]; then
+  test_case "ensure_bwrap_userns is a no-op when restriction is absent"
+  tmpdir=$(make_tmp)
+  userns_file="$tmpdir/userns"; echo 0 > "$userns_file"
+  profile_path="$tmpdir/bwrap"
+  out=$(JAILED_PYTHON_LIB_ONLY=1 \
+        JAILED_APPARMOR_USERNS_FILE="$userns_file" \
+        JAILED_APPARMOR_PROFILE_PATH="$profile_path" \
+        JAILED_APPARMOR_NO_RELOAD=1 \
+        bash -c 'source install.sh; ensure_bwrap_userns' 2>&1)
+  assert_exit 0 $? "no-op exits 0"
+  [[ ! -f "$profile_path" ]] && assert_eq yes yes "no profile written" \
+    || assert_eq yes no "profile written despite restriction=0"
+
+  test_case "ensure_bwrap_userns writes profile when restriction is active"
+  tmpdir=$(make_tmp)
+  userns_file="$tmpdir/userns"; echo 1 > "$userns_file"
+  profile_path="$tmpdir/bwrap"
+  out=$(JAILED_PYTHON_LIB_ONLY=1 \
+        JAILED_APPARMOR_USERNS_FILE="$userns_file" \
+        JAILED_APPARMOR_PROFILE_PATH="$profile_path" \
+        JAILED_APPARMOR_NO_RELOAD=1 \
+        bash -c 'source install.sh; ensure_bwrap_userns' 2>&1)
+  if command -v bwrap >/dev/null 2>&1; then
+    assert_contains "$out" "Installed AppArmor profile" "announces install"
+    [[ -f "$profile_path" ]] && assert_eq yes yes "profile file exists" \
+      || assert_eq yes no "profile file missing"
+    assert_contains "$(cat "$profile_path")" "jailed: apparmor-bwrap-profile" "profile has marker"
+    assert_contains "$(cat "$profile_path")" "$(command -v bwrap)" "profile binds to actual bwrap path"
+  else
+    assert_not_contains "$out" "Installed AppArmor profile" "no-op when bwrap missing"
+  fi
+
+  test_case "ensure_bwrap_userns leaves foreign profile alone"
+  tmpdir=$(make_tmp)
+  userns_file="$tmpdir/userns"; echo 1 > "$userns_file"
+  profile_path="$tmpdir/bwrap"
+  echo "# someone else's profile" > "$profile_path"
+  out=$(JAILED_PYTHON_LIB_ONLY=1 \
+        JAILED_APPARMOR_USERNS_FILE="$userns_file" \
+        JAILED_APPARMOR_PROFILE_PATH="$profile_path" \
+        JAILED_APPARMOR_NO_RELOAD=1 \
+        bash -c 'source install.sh; ensure_bwrap_userns' 2>&1)
+  assert_contains "$out" "wasn't written by jailed" "warns and leaves alone"
+  assert_eq "# someone else's profile" "$(cat "$profile_path")" "foreign content preserved"
+
+  test_case "remove_apparmor_profile preserves foreign profile"
+  tmpdir=$(make_tmp)
+  profile_path="$tmpdir/bwrap"
+  echo "# someone else's profile" > "$profile_path"
+  JAILED_PYTHON_LIB_ONLY=1 \
+    JAILED_APPARMOR_PROFILE_PATH="$profile_path" \
+    JAILED_APPARMOR_NO_RELOAD=1 \
+    bash -c 'source install.sh; remove_apparmor_profile' >/dev/null 2>&1
+  [[ -f "$profile_path" ]] && assert_eq yes yes "foreign profile still there" \
+    || assert_eq yes no "foreign profile deleted!"
+
+  test_case "remove_apparmor_profile removes jailed-written profile"
+  tmpdir=$(make_tmp)
+  profile_path="$tmpdir/bwrap"
+  printf '# jailed: apparmor-bwrap-profile\nprofile bwrap /x {}\n' > "$profile_path"
+  out=$(JAILED_PYTHON_LIB_ONLY=1 \
+        JAILED_APPARMOR_PROFILE_PATH="$profile_path" \
+        JAILED_APPARMOR_NO_RELOAD=1 \
+        bash -c 'source install.sh; remove_apparmor_profile' 2>&1)
+  assert_contains "$out" "Removed:" "announces removal"
+  [[ ! -f "$profile_path" ]] && assert_eq yes yes "profile deleted" \
+    || assert_eq yes no "profile still present"
+fi
+
 # ---- CLI / help ----
 
 test_case "--help prints usage"
